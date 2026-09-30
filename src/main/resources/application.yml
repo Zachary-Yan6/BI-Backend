@@ -1,0 +1,85 @@
+spring:
+  config:
+    import: optional:file:./.env[.properties]
+  application:
+    name: bi-backend
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://localhost:3306/bi_db}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+  data:
+    redis:
+      database: 3
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 5s
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    listener:
+      simple:
+        acknowledge-mode: manual
+  servlet:
+    multipart:
+      max-file-size: 10MB
+
+server:
+  address: 0.0.0.0
+  port: 8101
+  servlet:
+    context-path: /api
+    session:
+      timeout: 30d
+      cookie:
+        max-age: 30d
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: false
+  global-config:
+    db-config:
+      logic-delete-field: isDelete
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Only health is public. Other actuator endpoints can leak configuration and internals.
+        include: health
+  endpoint:
+    health:
+      # Report UP/DOWN only; component details (hosts, versions) stay private.
+      show-details: never
+
+springdoc:
+  api-docs:
+    enabled: true
+  packages-to-scan: com.zachary.BI.controller
+  swagger-ui:
+    path: /swagger-ui.html
+
+bi:
+  ai:
+    base-url: https://api.deepseek.com
+    api-key: ${DEEPSEEK_API_KEY:}
+    model: deepseek-v4-flash
+
+  upload:
+    # Private server directory for incomplete chunk uploads.
+    staging-directory: ${UPLOAD_STAGING_DIRECTORY:./data/uploads}
+
+    # The total file-size limit for resumable uploads: 25 MB.
+    max-file-size-bytes: 26214400
+
+    # Every non-final frontend chunk must be 5 MB.
+    chunk-size-bytes: 5242880
+
+    # Unfinished uploads expire after 24 hours.
+    session-ttl-hours: 24

@@ -1,0 +1,24 @@
+# Runs Jenkins on your own machine:
+#
+#   docker compose -f jenkins/compose.yaml up -d --build
+#   open http://localhost:8080
+#
+# First-login admin password:
+#   docker compose -f jenkins/compose.yaml exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+
+name: bi-jenkins
+
+services:
+  jenkins:
+    build: .
+    restart: unless-stopped
+    ports:
+      # Bound to 127.0.0.1 only: Jenkins can run arbitrary code and holds AWS credentials,
+      # so it must never be reachable from your network or the internet.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Jobs, credentials, plugins and build history survive restarts and image rebuilds.
+      - jenkins_home:/var/jenkins_home
+
+volumes:
+  jenkins_home:

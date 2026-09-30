@@ -1,0 +1,26 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SeeWhetherCiPublishedAnImage",
+      "Effect": "Allow",
+      "Action": "ecr:DescribeImages",
+      "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/bi-backend"
+    },
+    {
+      "Sid": "RunShellCommandsOnlyOnTheBiInstance",
+      "Effect": "Allow",
+      "Action": "ssm:SendCommand",
+      "Resource": [
+        "arn:aws:ec2:<REGION>:<ACCOUNT_ID>:instance/<INSTANCE_ID>",
+        "arn:aws:ssm:<REGION>::document/AWS-RunShellScript"
+      ]
+    },
+    {
+      "Sid": "ReadTheResultOfThoseCommands",
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
+    }
+  ]
+}

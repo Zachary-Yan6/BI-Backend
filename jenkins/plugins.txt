@@ -1,0 +1,12 @@
+# Pipeline engine and declarative Jenkinsfile support
+workflow-aggregator
+# Check out the repository and poll it for new commits
+git
+# Inject stored credentials into a build as environment variables
+credentials-binding
+# "AWS Credentials" credential type (access key id + secret access key)
+aws-credentials
+# Visual stage-by-stage view of each run
+pipeline-stage-view
+# Timestamps on every console log line
+timestamper

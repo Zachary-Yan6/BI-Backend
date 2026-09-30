@@ -1,0 +1,144 @@
+# Continuous Integration for bi-backend.
+#
+# Every pull request and every push to main is built and tested. Only commits that land on main
+# AND pass every test are packaged into a Docker image and pushed to Amazon ECR, tagged with the
+# git commit SHA. That image is the "release candidate" Jenkins deploys, so an image existing in
+# ECR is itself proof that CI passed for that commit.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  # Adds a "Run workflow" button in the Actions tab for manual runs.
+  workflow_dispatch:
+
+# Least privilege: jobs get read-only repository access unless they ask for more.
+permissions:
+  contents: read
+
+# A newer push to the same PR cancels the outdated run. Runs on main are never cancelled,
+# so every merged commit still gets its image.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  ECR_REPOSITORY: bi-backend
+
+jobs:
+  build-and-test:
+    name: Build, test and coverage gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          # Caches ~/.m2 keyed on pom.xml, so dependencies download once, not on every run.
+          cache: maven
+
+      # One command runs the whole quality gate:
+      #   surefire  -> 195 unit tests
+      #   jacoco    -> fails the build if unit-test line coverage < 90%
+      #   failsafe  -> integration tests against real MySQL/Redis/RabbitMQ via Testcontainers
+      #                (GitHub-hosted Ubuntu runners have Docker preinstalled)
+      # -ntp hides dependency download progress so logs stay readable.
+      - name: Build and verify
+        run: ./mvnw -B -ntp verify
+
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import os, xml.etree.ElementTree as ET
+          print("## Coverage\n\n| Suite | Line | Branch |\n|---|---|---|")
+          for label, path in [("Unit (gate: 90% line)", "target/site/jacoco/jacoco.xml"),
+                              ("Integration (informational)", "target/site/jacoco-it/jacoco.xml")]:
+              if not os.path.exists(path):
+                  print(f"| {label} | n/a | n/a |"); continue
+              totals = {c.get("type"): c for c in ET.parse(path).getroot().findall("counter")}
+              pct = lambda t: 100 * int(totals[t].get("covered")) / (int(totals[t].get("covered")) + int(totals[t].get("missed")))
+              print(f"| {label} | {pct('LINE'):.1f}% | {pct('BRANCH'):.1f}% |")
+          EOF
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            target/site/jacoco/
+            target/site/jacoco-it/
+          retention-days: 14
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+          retention-days: 14
+
+  publish-image:
+    name: Publish image to Amazon ECR
+    needs: build-and-test
+    # Pull requests are tested but never published: only reviewed, merged code becomes a release.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Lets this job request a short-lived OpenID Connect token from GitHub, which AWS exchanges
+      # for temporary credentials. No AWS access keys are stored in GitHub at all.
+      id-token: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Repository variables (Settings > Secrets and variables > Actions > Variables).
+          # They are identifiers, not secrets, so they live in "vars", not "secrets".
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Tag with the full commit SHA: immutable and traceable back to the exact source.
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          # Reuse Docker layers from previous runs (e.g. the dependency layer) via the Actions cache.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Push a plain single-platform image manifest, which keeps ECR listings simple.
+          provenance: false
+
+      - name: Summarise release candidate
+        run: |
+          {
+            echo "## Release candidate"
+            echo ""
+            echo "\`${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}\`"
+            echo ""
+            echo "Jenkins will detect this commit and deploy this exact image."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,39 @@
+# Production overrides layered on top of compose.yaml. deploy/deploy.sh runs:
+#
+#   docker compose -f compose.yaml -f compose.prod.yaml --profile app up -d
+#
+# Later files override earlier ones, so local development (compose.yaml alone) is unchanged.
+
+services:
+  backend:
+    # Deploy the exact image CI built and tested, never a fresh build on the server.
+    # deploy.sh sets BACKEND_IMAGE to <account>.dkr.ecr.<region>.amazonaws.com/bi-backend:<git-sha>.
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be set by deploy/deploy.sh}
+    build: !reset null
+    environment:
+      UPLOAD_STAGING_DIRECTORY: /app/data/uploads
+    volumes:
+      # Without a volume, uploaded files would vanish every time a new release replaces the container.
+      - uploads:/app/data/uploads
+    mem_limit: 1g
+    logging: &default-logging
+      driver: json-file
+      options:
+        # Cap log files so a busy week cannot fill the EC2 disk.
+        max-size: "10m"
+        max-file: "5"
+
+  mysql:
+    logging: *default-logging
+
+  redis:
+    logging: *default-logging
+
+  rabbitmq:
+    logging: *default-logging
+
+  migrations:
+    logging: *default-logging
+
+volumes:
+  uploads:

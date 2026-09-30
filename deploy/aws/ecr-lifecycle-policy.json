@@ -1,0 +1,16 @@
+{
+  "rules": [
+    {
+      "rulePriority": 1,
+      "description": "Keep the 30 most recent release images; older ones are deleted to save storage cost",
+      "selection": {
+        "tagStatus": "any",
+        "countType": "imageCountMoreThan",
+        "countNumber": 30
+      },
+      "action": {
+        "type": "expire"
+      }
+    }
+  ]
+}
