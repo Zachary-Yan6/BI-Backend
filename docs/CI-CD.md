@@ -202,6 +202,14 @@ IAM → **Roles** → Create role → **Custom trust policy** → paste
 The `sub` condition is the security boundary: only workflows running on **`main` of your repo** can
 assume the role, not pull requests, other branches or forks.
 
+**Newer repositories include immutable IDs in `sub`**, for example
+`repo:Zachary-Yan6@238111035/BI-Backend@1398393578:ref:refs/heads/main`. The numbers are the owner and
+repository IDs, which prevent "repojacking": if you rename or delete the repo, someone who re-registers the
+same name gets different IDs and cannot assume your role. Get the IDs from the API
+(`https://api.github.com/repos/<GITHUB_OWNER>/<GITHUB_REPO>`: `owner.id` and `id`). If your repository still
+uses the older name-only format, drop the `@<ID>` parts. If unsure, print the token claims from a workflow
+step and copy `sub` exactly.
+
 Next → skip managed policies → name it `github-actions-bi-backend-ci` → Create. Open the role →
 **Add permissions → Create inline policy → JSON** → paste
 `deploy/aws/github-actions-ecr-push-policy.json` (fill `<REGION>`, `<ACCOUNT_ID>`). This lets it push
@@ -423,7 +431,7 @@ the old image but not the old schema). So every migration must be:
 | Symptom | Likely cause |
 |---|---|
 | CI: `./mvnw: Permission denied` | The executable bit wasn't committed. Run the `git update-index --chmod=+x` step from 1.1. |
-| CI: `Could not load credentials` / `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The trust policy `sub` doesn't match `repo:owner/name:ref:refs/heads/main` exactly (case matters), or the `AWS_CI_ROLE_ARN` variable is wrong. |
+| CI: `Could not load credentials` / `Not authorized to perform sts:AssumeRoleWithWebIdentity` | The trust policy `sub` doesn't match the token exactly: check the `@<ID>` parts and case (see 3.3), or the `AWS_CI_ROLE_ARN` variable is wrong. |
 | CI: push fails with `tag invalid: already exists` | Immutable tags working as intended: that commit was already published. Re-running an old commit's publish job is unnecessary. |
 | Jenkins stuck in "Wait for CI image" | CI failed or hasn't finished for that commit. Check the Actions tab. It times out after 25 minutes. |
 | Jenkins: `AccessDenied ... ssm:SendCommand` | The policy's `<INSTANCE_ID>`/`<REGION>` doesn't match, or `BI_INSTANCE_ID` is wrong. |
