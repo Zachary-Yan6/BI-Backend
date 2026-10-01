@@ -39,10 +39,11 @@ pipeline {
             steps {
                 script {
                     env.RELEASE_SHA = params.RELEASE_SHA?.trim() ?: sh(script: 'git rev-parse HEAD', returnStdout: true).trim()
-                    if (!(env.RELEASE_SHA ==~ /[0-9a-f]{40}/)) {
+                    // Plain java.lang.String methods only: the Jenkins script sandbox rejects many Groovy extensions.
+                    if (!env.RELEASE_SHA.matches('[0-9a-f]{40}')) {
                         error "RELEASE_SHA must be a full 40-character commit SHA, got '${env.RELEASE_SHA}'"
                     }
-                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.RELEASE_SHA.take(7)}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} ${env.RELEASE_SHA.substring(0, 7)}"
                     echo "Release candidate: ${env.RELEASE_SHA}"
                 }
             }
@@ -56,12 +57,17 @@ pipeline {
                                      accessKeyVariable: 'AWS_ACCESS_KEY_ID',
                                      secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                     timeout(time: 25, unit: 'MINUTES') {
-                        waitUntil(initialRecurrencePeriod: 15000, quiet: true) {
-                            sh(returnStatus: true, script: '''
-                                aws ecr describe-images --region "$AWS_REGION" \
-                                    --repository-name bi-backend \
-                                    --image-ids imageTag="$RELEASE_SHA" >/dev/null 2>&1
-                            ''') == 0
+                        // Declarative "steps" accept only steps, not expressions such as "sh(...) == 0".
+                        // A script block allows the Groovy needed to return true/false to waitUntil.
+                        script {
+                            waitUntil(initialRecurrencePeriod: 15000, quiet: true) {
+                                def status = sh(returnStatus: true, script: '''
+                                    aws ecr describe-images --region "$AWS_REGION" \
+                                        --repository-name bi-backend \
+                                        --image-ids imageTag="$RELEASE_SHA" >/dev/null 2>&1
+                                ''')
+                                return status == 0
+                            }
                         }
                     }
                 }
