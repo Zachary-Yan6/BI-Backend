@@ -74,7 +74,10 @@ services:
     restart: unless-stopped
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      DB_URL: jdbc:mysql://mysql:3306/bi_db?characterEncoding=utf8&useSSL=false&serverTimezone=UTC
+      # No useSSL=false: MySQL 8 caching_sha2_password needs TLS for the first login after every MySQL
+      # restart (when its auth cache is empty). With TLS disabled, the backend fails with
+      # "Public Key Retrieval is not allowed" after a reboot. MySQL generates its certificate at init.
+      DB_URL: jdbc:mysql://mysql:3306/bi_db?characterEncoding=utf8&serverTimezone=UTC
       DB_USERNAME: root
       DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
       REDIS_HOST: redis
