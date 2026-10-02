@@ -105,14 +105,18 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         }
         int nextAttempt = job.getRetryCount() + 1;
         if (nextAttempt > job.getMaxRetries()) {
-            return -1;
+            return 0;
         }
-        analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
+        int changed = analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getId, jobId)
                 .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.RUNNING.getValue())
                 .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.RETRYING.getValue())
                 .set(AnalysisJob::getRetryCount, nextAttempt)
                 .set(AnalysisJob::getFailureReason, truncate(reason)));
+        if (changed == 0) {
+            // The recovery task or a user action changed the job after it was read.
+            return -1;
+        }
         addEvent(jobId, AnalysisJobStatusEnum.RETRYING.getValue(),
                 "Attempt " + nextAttempt + " failed; retry has been scheduled.");
         return nextAttempt;
@@ -252,6 +256,73 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
                 AnalysisJobStatusEnum.QUEUED.getValue(),
                 "Result persistence failed; the RabbitMQ message was returned to the queue."
         );
+    }
+
+    @Override
+    public List<AnalysisJob> listStaleRunning(Date startedBefore, int limit) {
+        return analysisJobMapper.selectList(new LambdaQueryWrapper<AnalysisJob>()
+                .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.RUNNING.getValue())
+                .lt(AnalysisJob::getStartedAt, startedBefore)
+                .orderByAsc(AnalysisJob::getStartedAt)
+                .last("LIMIT " + limit));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AnalysisJobStatusEnum recoverStaleRunning(long jobId, Date startedBefore) {
+        String reason = "The worker did not finish within the processing timeout.";
+
+        // Both updates repeat the stale condition, so a worker that finishes in the meantime always wins.
+        int retried = analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
+                .eq(AnalysisJob::getId, jobId)
+                .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.RUNNING.getValue())
+                .lt(AnalysisJob::getStartedAt, startedBefore)
+                .apply("retryCount < maxRetries")
+                .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.RETRYING.getValue())
+                .setSql("retryCount = retryCount + 1")
+                .set(AnalysisJob::getFailureReason, reason));
+        if (retried == 1) {
+            addEvent(jobId, AnalysisJobStatusEnum.RETRYING.getValue(),
+                    "The worker stopped responding; the job has been queued again.");
+            return AnalysisJobStatusEnum.RETRYING;
+        }
+
+        int failed = analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
+                .eq(AnalysisJob::getId, jobId)
+                .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.RUNNING.getValue())
+                .lt(AnalysisJob::getStartedAt, startedBefore)
+                .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.FAILED.getValue())
+                .set(AnalysisJob::getActiveFingerprint, null)
+                .set(AnalysisJob::getFailureReason, reason)
+                .set(AnalysisJob::getFinishedAt, new Date()));
+        if (failed == 1) {
+            addEvent(jobId, AnalysisJobStatusEnum.FAILED.getValue(),
+                    "The worker stopped responding and no retries remain.");
+            return AnalysisJobStatusEnum.FAILED;
+        }
+        return null;
+    }
+
+    @Override
+    public List<AnalysisJob> listStalePending(long idleSeconds, int limit) {
+        // updateTime is written by MySQL, so compare it with MySQL's clock rather than the JVM's.
+        return analysisJobMapper.selectList(new LambdaQueryWrapper<AnalysisJob>()
+                .in(AnalysisJob::getStatus, AnalysisJobStatusEnum.QUEUED.getValue(),
+                        AnalysisJobStatusEnum.RETRYING.getValue())
+                .apply("updateTime < NOW() - INTERVAL {0} SECOND", idleSeconds)
+                .orderByAsc(AnalysisJob::getUpdateTime)
+                .last("LIMIT " + limit));
+    }
+
+    @Override
+    public boolean claimStalePending(long jobId, long idleSeconds) {
+        // Touching updateTime makes other instances skip this job until it goes stale again.
+        return analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
+                .eq(AnalysisJob::getId, jobId)
+                .in(AnalysisJob::getStatus, AnalysisJobStatusEnum.QUEUED.getValue(),
+                        AnalysisJobStatusEnum.RETRYING.getValue())
+                .apply("updateTime < NOW() - INTERVAL {0} SECOND", idleSeconds)
+                .setSql("updateTime = NOW()")) == 1;
     }
 
     private void addEvent(long jobId, String status, String message) {

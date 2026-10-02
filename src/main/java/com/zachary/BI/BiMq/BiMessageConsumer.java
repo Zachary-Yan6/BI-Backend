@@ -57,7 +57,12 @@ public class BiMessageConsumer {
 
         Chart chart = chartService.getById(job.getChartId());
         if (chart == null) {
-            throw new IllegalStateException("The chart record no longer exists");
+            // Retrying cannot bring a deleted chart back. Throwing here would leave the message unacknowledged
+            // and the job stuck in running, so finish the job and acknowledge instead.
+            log.warn("Analysis job {} refers to missing chart {}", jobId, job.getChartId());
+            analysisJobService.fail(jobId, "The chart record no longer exists.");
+            channel.basicAck(deliveryTag, false);
+            return;
         }
 
         String genChart;
@@ -123,6 +128,12 @@ public class BiMessageConsumer {
 
     private void handleFailure(long jobId, AnalysisJob job, String reason) {
         int retryAttempt = analysisJobService.scheduleRetry(jobId, reason);
+        if (retryAttempt < 0) {
+            // Another actor (normally the recovery task) already owns this job; failing it here would
+            // overwrite that decision.
+            log.warn("Analysis job {} is no longer running; skipping failure handling", jobId);
+            return;
+        }
         if (retryAttempt > 0) {
             try {
                 biMessageProducer.scheduleRetry(jobId, BASE_RETRY_DELAY_MILLIS * (1L << (retryAttempt - 1)));

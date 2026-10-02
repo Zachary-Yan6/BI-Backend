@@ -67,7 +67,8 @@ create table if not exists analysis_job
     unique key uk_analysis_job_request (requestId),
     unique key uk_analysis_job_active_input (userId, activeFingerprint),
     key idx_analysis_job_chart (chartId),
-    key idx_analysis_job_owner_status (userId, status)
+    key idx_analysis_job_owner_status (userId, status),
+    key idx_analysis_job_status_update (status, updateTime)
 ) comment 'Reliable analysis job';
 
 create table if not exists analysis_job_event

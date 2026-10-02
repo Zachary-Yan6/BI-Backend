@@ -7,6 +7,7 @@ import com.zachary.BI.mapper.AnalysisJobMapper;
 import com.zachary.BI.model.entity.AnalysisJob;
 import com.zachary.BI.model.entity.AnalysisJobEvent;
 import com.zachary.BI.model.entity.Chart;
+import com.zachary.BI.model.enums.AnalysisJobStatusEnum;
 import com.zachary.BI.service.ChartService;
 import com.zachary.BI.support.MybatisPlusTestSupport;
 import org.junit.jupiter.api.BeforeAll;
@@ -18,11 +19,13 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.util.Date;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -125,14 +128,26 @@ class AnalysisJobServiceImplTest {
     }
 
     @Test
-    void scheduleRetry_whenRetriesExhausted_shouldReturnMinusOne() {
+    void scheduleRetry_whenRetriesExhausted_shouldReturnZero() {
         AnalysisJob job = job(1L, "running");
         job.setRetryCount(3);
         job.setMaxRetries(3);
         when(analysisJobMapper.selectById(1L)).thenReturn(job);
 
-        assertEquals(-1, analysisJobService.scheduleRetry(1L, "boom"));
+        assertEquals(0, analysisJobService.scheduleRetry(1L, "boom"));
         verify(analysisJobMapper, never()).update(any(), any());
+    }
+
+    @Test
+    void scheduleRetry_whenJobChangesAfterRead_shouldReturnMinusOneWithoutEvent() {
+        AnalysisJob job = job(1L, "running");
+        job.setRetryCount(0);
+        job.setMaxRetries(3);
+        when(analysisJobMapper.selectById(1L)).thenReturn(job);
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(0);
+
+        assertEquals(-1, analysisJobService.scheduleRetry(1L, "boom"));
+        verifyNoInteractions(analysisJobEventMapper);
     }
 
     @Test
@@ -141,6 +156,7 @@ class AnalysisJobServiceImplTest {
         job.setRetryCount(1);
         job.setMaxRetries(3);
         when(analysisJobMapper.selectById(1L)).thenReturn(job);
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(1);
 
         assertEquals(2, analysisJobService.scheduleRetry(1L, " "));
 
@@ -278,6 +294,50 @@ class AnalysisJobServiceImplTest {
         assertBusinessError(ErrorCode.OPERATION_ERROR,
                 () -> analysisJobService.requeueAfterPersistenceFailure(1L, "reason"));
         verifyNoInteractions(analysisJobEventMapper);
+    }
+
+    @Test
+    void recoverStaleRunning_withRetriesLeft_shouldMoveToRetrying() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(1);
+
+        assertEquals(AnalysisJobStatusEnum.RETRYING, analysisJobService.recoverStaleRunning(1L, new Date()));
+
+        verify(analysisJobMapper).update(isNull(), any());
+        assertEquals("retrying", capturedEvent().getStatus());
+    }
+
+    @Test
+    void recoverStaleRunning_withNoRetriesLeft_shouldFail() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(0, 1);
+
+        assertEquals(AnalysisJobStatusEnum.FAILED, analysisJobService.recoverStaleRunning(1L, new Date()));
+
+        assertEquals("failed", capturedEvent().getStatus());
+    }
+
+    @Test
+    void recoverStaleRunning_whenWorkerFinishedMeanwhile_shouldDoNothing() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(0, 0);
+
+        assertNull(analysisJobService.recoverStaleRunning(1L, new Date()));
+        verifyNoInteractions(analysisJobEventMapper);
+    }
+
+    @Test
+    void claimStalePending_shouldReportWhetherThisCallerWon() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(1, 0);
+
+        assertTrue(analysisJobService.claimStalePending(1L, 600));
+        assertFalse(analysisJobService.claimStalePending(1L, 600));
+    }
+
+    @Test
+    void staleQueries_shouldDelegateToMapper() {
+        AnalysisJob job = job(1L, "running");
+        when(analysisJobMapper.selectList(any())).thenReturn(List.of(job));
+
+        assertEquals(List.of(job), analysisJobService.listStaleRunning(new Date(), 10));
+        assertEquals(List.of(job), analysisJobService.listStalePending(600, 10));
     }
 
     private AnalysisJobEvent capturedEvent() {

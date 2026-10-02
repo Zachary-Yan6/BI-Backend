@@ -71,6 +71,15 @@ bi:
     api-key: ${DEEPSEEK_API_KEY:}
     model: deepseek-v4-flash
 
+  analysis:
+    recovery:
+      # Scheduled safety net for jobs stuck in running/queued/retrying (see AnalysisJobRecoveryTask).
+      enabled: true
+      interval: PT1M
+      stale-running-after: PT10M
+      stale-pending-after: PT10M
+      batch-size: 100
+
   upload:
     # Private server directory for incomplete chunk uploads.
     staging-directory: ${UPLOAD_STAGING_DIRECTORY:./data/uploads}
