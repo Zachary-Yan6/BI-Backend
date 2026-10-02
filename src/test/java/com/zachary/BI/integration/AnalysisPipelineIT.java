@@ -5,7 +5,10 @@ import com.zachary.BI.BiMq.BiMqConstant;
 import com.zachary.BI.integration.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.core.AmqpAdmin;
+import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.mock.web.MockMultipartFile;
@@ -44,6 +47,13 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
 
     @Autowired
     private RabbitTemplate rabbitTemplate;
+
+    @Autowired
+    private AmqpAdmin amqpAdmin;
+
+    @Autowired
+    @Qualifier("biBinding")
+    private Binding analysisQueueBinding;
 
     @AfterEach
     void resumeConsumer() {
@@ -273,6 +283,25 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
                 .containsEntry("genChart", null);
         assertThat(jdbcTemplate.queryForObject("select retryCount from analysis_job where id = ?", Integer.class,
                 jobId)).isZero();
+    }
+
+    @Test
+    void unroutableMessage_shouldFailSubmissionInsteadOfBeingSilentlyDropped() throws Exception {
+        TestUser user = registerAndLogin();
+        String fileToken = uploadFile(user, "sales.csv", CSV);
+        // Simulates a broken broker topology: the exchange accepts the message but no queue is bound to it,
+        // so RabbitMQ discards it. Without publisher returns the producer never finds out.
+        amqpAdmin.removeBinding(analysisQueueBinding);
+        JsonNode response;
+        try {
+            response = postJson("/chart/gen", user.session(), generationRequest(fileToken, "Unroutable", false));
+        } finally {
+            amqpAdmin.declareBinding(analysisQueueBinding);
+        }
+
+        assertErrorCode(response, 50000);
+        assertThat(jdbcTemplate.queryForObject("select status from analysis_job where userId = ?", String.class,
+                user.id())).as("the job is failed, not left queued without a message").isEqualTo("failed");
     }
 
     @Test
