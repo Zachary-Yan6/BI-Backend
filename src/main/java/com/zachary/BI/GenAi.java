@@ -3,11 +3,14 @@ package com.zachary.BI;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
@@ -23,8 +26,16 @@ public class GenAi {
                  ObjectMapper objectMapper,
                  @Value("${bi.ai.base-url}") String baseUrl,
                  @Value("${bi.ai.api-key:}") String apiKey,
-                 @Value("${bi.ai.model}") String model) {
-        this.restClient = restClientBuilder.baseUrl(baseUrl).build();
+                 @Value("${bi.ai.model}") String model,
+                 @Value("${bi.ai.connect-timeout:PT10S}") Duration connectTimeout,
+                 @Value("${bi.ai.read-timeout:PT3M}") Duration readTimeout) {
+        // Without timeouts a hung provider blocks a consumer thread forever and stalls the whole analysis queue.
+        // JdkClientHttpRequestFactory applies the read timeout until the response body has been fully read,
+        // so it also bounds a server that sends headers early and then keeps the connection alive.
+        JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(connectTimeout).build());
+        requestFactory.setReadTimeout(readTimeout);
+        this.restClient = restClientBuilder.baseUrl(baseUrl).requestFactory(requestFactory).build();
         this.objectMapper = objectMapper;
         this.apiKey = apiKey;
         this.model = model;

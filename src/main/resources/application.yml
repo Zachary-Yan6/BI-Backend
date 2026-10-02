@@ -24,6 +24,13 @@ spring:
     listener:
       simple:
         acknowledge-mode: manual
+        # Each consumer thread holds one AI call for up to bi.ai.read-timeout, so one slow call no longer
+        # blocks every other job. Kept small: the container has 1 GB and the AI provider rate-limits.
+        concurrency: 3
+        max-concurrency: 3
+        # Deliver one unacknowledged message per consumer at a time. With the default (250) a busy consumer
+        # hoards queued jobs that idle consumers could have processed.
+        prefetch: 1
   servlet:
     multipart:
       max-file-size: 10MB
@@ -70,6 +77,11 @@ bi:
     base-url: https://api.deepseek.com
     api-key: ${DEEPSEEK_API_KEY:}
     model: deepseek-v4-flash
+    connect-timeout: PT10S
+    # Total time allowed for one AI call, including reading the whole response body.
+    # Must stay well below bi.analysis.recovery.stale-running-after, otherwise the recovery task
+    # could reclaim a job whose worker is still legitimately waiting for the provider.
+    read-timeout: PT3M
 
   analysis:
     recovery:
