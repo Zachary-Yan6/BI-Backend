@@ -29,6 +29,13 @@ public interface AnalysisJobService {
 
     boolean cancel(long jobId, long userId);
 
+    /**
+     * Cancels every queued, running or retrying job of a chart that is being deleted.
+     *
+     * @return number of jobs cancelled
+     */
+    int cancelActiveJobsForChart(long chartId);
+
     boolean retry(long jobId, long userId);
 
     AnalysisJob getForUser(long jobId, long userId);

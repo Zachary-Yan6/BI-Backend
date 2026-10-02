@@ -154,6 +154,33 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public int cancelActiveJobsForChart(long chartId) {
+        List<String> activeStatuses = List.of(AnalysisJobStatusEnum.QUEUED.getValue(),
+                AnalysisJobStatusEnum.RUNNING.getValue(), AnalysisJobStatusEnum.RETRYING.getValue());
+        List<AnalysisJob> activeJobs = analysisJobMapper.selectList(new LambdaQueryWrapper<AnalysisJob>()
+                .eq(AnalysisJob::getChartId, chartId)
+                .in(AnalysisJob::getStatus, activeStatuses));
+
+        int cancelled = 0;
+        for (AnalysisJob job : activeJobs) {
+            // Unlike a user cancel, running jobs are included: the in-flight AI call cannot be stopped, but once the
+            // job is no longer running the worker's result is discarded and no further retries are scheduled.
+            int changed = analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
+                    .eq(AnalysisJob::getId, job.getId())
+                    .in(AnalysisJob::getStatus, activeStatuses)
+                    .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.CANCELLED.getValue())
+                    .set(AnalysisJob::getActiveFingerprint, null)
+                    .set(AnalysisJob::getCancelledAt, new Date()));
+            if (changed > 0) {
+                addEvent(job.getId(), AnalysisJobStatusEnum.CANCELLED.getValue(), "Cancelled because the chart was deleted.");
+                cancelled++;
+            }
+        }
+        return cancelled;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean retry(long jobId, long userId) {
         AnalysisJob job = getForUser(jobId, userId);
         if (job == null || !AnalysisJobStatusEnum.FAILED.getValue().equals(job.getStatus())) {
