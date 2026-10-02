@@ -327,7 +327,7 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
                     .get("code").asInt());
         }
 
-        assertThat(codes).containsExactly(0, 0, 50000);
+        assertThat(codes).containsExactly(0, 0, 42900);
         assertThat(jdbcTemplate.queryForObject("select count(*) from chart where userId = ?", Integer.class, user.id()))
                 .isEqualTo(2);
 

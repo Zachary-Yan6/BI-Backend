@@ -14,6 +14,7 @@ public enum ErrorCode {
     NO_AUTH_ERROR(40101, "Permission denied"),
     NOT_FOUND_ERROR(40400, "Requested data was not found"),
     FORBIDDEN_ERROR(40300, "Access forbidden"),
+    TOO_MANY_REQUESTS(42900, "Too many requests"),
     SYSTEM_ERROR(50000, "Internal system error"),
     OPERATION_ERROR(50001, "Operation failed");
 
