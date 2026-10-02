@@ -29,4 +29,15 @@ public class UploadProperties {
      * Lifetime of incomplete upload sessions.
      */
     private int sessionTtlHours;
+
+    /**
+     * How long a merged file stays available for analysis after the upload completes.
+     * Charts keep their own copy of the data, so deleting the file afterwards loses nothing.
+     */
+    private int completedRetentionHours = 168;
+
+    /**
+     * A completion claim older than this is treated as abandoned by a crashed process.
+     */
+    private int completionLeaseMinutes = 10;
 }

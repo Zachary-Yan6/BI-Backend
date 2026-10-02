@@ -92,3 +92,14 @@ bi:
 
     # Unfinished uploads expire after 24 hours.
     session-ttl-hours: 24
+
+    # Merged files can be analysed for 7 days; afterwards the cleanup task deletes them.
+    completed-retention-hours: 168
+
+    # A completion that has not finished after 10 minutes is assumed to belong to a crashed process.
+    completion-lease-minutes: 10
+
+    cleanup:
+      # Scheduled housekeeping for upload sessions and staging files (see UploadCleanupTask).
+      enabled: true
+      interval: PT15M
