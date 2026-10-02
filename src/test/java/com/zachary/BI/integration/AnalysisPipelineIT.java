@@ -15,6 +15,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -22,6 +24,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -223,6 +226,53 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
         assertThat(resubmitted.get("reused").asBoolean()).isFalse();
         assertThat(resubmitted.get("jobId").asLong()).isNotEqualTo(jobId);
         awaitJobStatus(resubmitted.get("jobId").asLong(), "succeeded");
+    }
+
+    @Test
+    void deletingChartWithQueuedJob_shouldCancelJobBeforeAnyAiCall() throws Exception {
+        TestUser user = registerAndLogin();
+        String fileToken = uploadFile(user, "sales.csv", CSV);
+
+        listenerRegistry.stop();
+        JsonNode submitted = submit(user, fileToken, "Deleted while queued");
+        long jobId = submitted.get("jobId").asLong();
+        assertSuccess(postJson("/chart/delete", user.session(), Map.of("id", submitted.get("chartId").asLong())));
+        assertThat(jobStatus(jobId)).isEqualTo("cancelled");
+
+        listenerRegistry.start();
+        await().during(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(5))
+                .until(() -> "cancelled".equals(jobStatus(jobId)));
+        verify(genAi, never()).doChat(anyString());
+        assertThat(eventStatuses(user, jobId)).contains("cancelled");
+    }
+
+    @Test
+    void deletingChartWhileAiCallIsRunning_shouldDiscardResultWithoutRetrying() throws Exception {
+        CountDownLatch aiCallStarted = new CountDownLatch(1);
+        CountDownLatch releaseAiCall = new CountDownLatch(1);
+        when(genAi.doChat(anyString())).thenAnswer(invocation -> {
+            aiCallStarted.countDown();
+            releaseAiCall.await(PIPELINE_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            return AI_RESPONSE;
+        });
+        TestUser user = registerAndLogin();
+        JsonNode submitted = submit(user, uploadFile(user, "sales.csv", CSV), "Deleted while running");
+        long jobId = submitted.get("jobId").asLong();
+        long chartId = submitted.get("chartId").asLong();
+
+        assertThat(aiCallStarted.await(PIPELINE_TIMEOUT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+        assertSuccess(postJson("/chart/delete", user.session(), Map.of("id", chartId)));
+        releaseAiCall.countDown();
+
+        // The finished call cannot be saved into the deleted chart, and the cancelled job is not retried.
+        await().during(Duration.ofSeconds(3)).atMost(Duration.ofSeconds(6))
+                .until(() -> "cancelled".equals(jobStatus(jobId)));
+        verify(genAi, times(1)).doChat(anyString());
+        assertThat(jdbcTemplate.queryForMap("select isDelete, genChart from chart where id = ?", chartId))
+                .containsEntry("isDelete", 1)
+                .containsEntry("genChart", null);
+        assertThat(jdbcTemplate.queryForObject("select retryCount from analysis_job where id = ?", Integer.class,
+                jobId)).isZero();
     }
 
     @Test

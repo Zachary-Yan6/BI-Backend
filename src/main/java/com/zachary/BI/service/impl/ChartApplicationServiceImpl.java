@@ -35,6 +35,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import jakarta.annotation.Resource;
@@ -81,10 +82,17 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean deleteChart(DeleteRequest request, User user, boolean isAdmin) {
         ThrowUtils.throwIf(request == null || request.getId() <= 0, ErrorCode.PARAMS_ERROR);
         Chart chart = requireChart(request.getId());
         ThrowUtils.throwIf(!isAdmin && !chart.getUserId().equals(user.getId()), ErrorCode.NO_AUTH_ERROR);
+        // Without this, a pending job would still call the AI, fail to save into the deleted chart, and retry until
+        // its attempts ran out, paying for every attempt.
+        int cancelled = analysisJobService.cancelActiveJobsForChart(chart.getId());
+        if (cancelled > 0) {
+            log.info("Cancelled {} active analysis job(s) of deleted chart {}", cancelled, chart.getId());
+        }
         return chartService.removeById(chart.getId());
     }
 

@@ -297,6 +297,25 @@ class AnalysisJobServiceImplTest {
     }
 
     @Test
+    void cancelActiveJobsForChart_shouldCancelEachJobThatIsStillActive() {
+        when(analysisJobMapper.selectList(any())).thenReturn(List.of(job(1L, "running"), job(2L, "queued")));
+        // Job 2 finished between the select and the update, so only job 1 is cancelled.
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(1, 0);
+
+        assertEquals(1, analysisJobService.cancelActiveJobsForChart(9L));
+
+        AnalysisJobEvent event = capturedEvent();
+        assertEquals(1L, event.getJobId());
+        assertEquals("cancelled", event.getStatus());
+    }
+
+    @Test
+    void cancelActiveJobsForChart_withoutActiveJobs_shouldDoNothing() {
+        assertEquals(0, analysisJobService.cancelActiveJobsForChart(9L));
+        verify(analysisJobMapper, never()).update(any(), any());
+    }
+
+    @Test
     void recoverStaleRunning_withRetriesLeft_shouldMoveToRetrying() {
         when(analysisJobMapper.update(isNull(), any())).thenReturn(1);
 

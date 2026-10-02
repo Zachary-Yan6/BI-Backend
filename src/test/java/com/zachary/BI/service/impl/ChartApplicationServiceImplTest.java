@@ -145,11 +145,22 @@ class ChartApplicationServiceImplTest {
         }
 
         @Test
-        void deleteChart_shouldAllowOwner() {
+        void deleteChart_shouldAllowOwnerAndCancelTheChartsActiveJobs() {
             when(chartService.getById(8L)).thenReturn(chart(8L, USER_ID));
             when(chartService.removeById(8L)).thenReturn(true);
+            when(analysisJobService.cancelActiveJobsForChart(8L)).thenReturn(1);
 
             assertTrue(chartApplicationService.deleteChart(deleteRequest(8L), user, false));
+            verify(analysisJobService).cancelActiveJobsForChart(8L);
+        }
+
+        @Test
+        void deleteChart_whenNotAuthorised_shouldNotCancelJobs() {
+            when(chartService.getById(8L)).thenReturn(chart(8L, 999L));
+
+            assertBusinessError(ErrorCode.NO_AUTH_ERROR,
+                    () -> chartApplicationService.deleteChart(deleteRequest(8L), user, false));
+            verify(analysisJobService, never()).cancelActiveJobsForChart(anyLong());
         }
 
         @Test
