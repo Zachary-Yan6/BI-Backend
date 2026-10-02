@@ -2,10 +2,16 @@ package com.zachary.BI.integration;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.zachary.BI.integration.support.AbstractIntegrationTest;
+import com.zachary.BI.model.entity.User;
+import com.zachary.BI.service.ResumableUploadService;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -21,6 +27,9 @@ class ResumableUploadIT extends AbstractIntegrationTest {
 
     @Value("${bi.upload.staging-directory}")
     private String stagingDirectory;
+
+    @Autowired
+    private ResumableUploadService resumableUploadService;
 
     @Test
     void chunkedUpload_outOfOrderAndRetried_shouldMergeIntoVerifiedFile() throws Exception {
@@ -131,5 +140,38 @@ class ResumableUploadIT extends AbstractIntegrationTest {
                 Map.of("fileName", "notes.pdf", "totalSize", 10)), 40000);
         assertErrorCode(postJson("/upload/sessions", user.session(),
                 Map.of("fileName", "big.csv", "totalSize", 26_214_401L)), 40000);
+    }
+
+    @Test
+    void slowFirstChunk_shouldNotOverwriteStatusChangedByAConcurrentRequest() throws Exception {
+        TestUser user = registerAndLogin();
+        String uploadId = createUploadSession(user, "sales.csv", CSV.length);
+        byte[] firstChunk = Arrays.copyOfRange(CSV, 0, CHUNK_SIZE);
+
+        // The first chunk's request read the session while it was still "created". While its body is being
+        // received, the other chunks arrive and a completion finishes; simulate that interleaving deterministically
+        // by changing the row the moment the body has been fully read.
+        InputStream bodyThatLetsOthersFinish = new ByteArrayInputStream(firstChunk) {
+            private boolean completedElsewhere;
+
+            @Override
+            public synchronized int read(byte[] buffer, int offset, int length) {
+                int read = super.read(buffer, offset, length);
+                if (read == -1 && !completedElsewhere) {
+                    completedElsewhere = true;
+                    jdbcTemplate.update("update upload_session set status = 'completed' where uploadId = ?", uploadId);
+                }
+                return read;
+            }
+        };
+        User loginUser = new User();
+        loginUser.setId(user.id());
+
+        resumableUploadService.uploadChunk(uploadId, 0, "bytes 0-15/" + CSV.length, sha256(firstChunk),
+                CHUNK_SIZE, bodyThatLetsOthersFinish, loginUser);
+
+        // A blind full-row update would have written the stale snapshot back as "uploading".
+        assertThat(jdbcTemplate.queryForObject("select status from upload_session where uploadId = ?", String.class,
+                uploadId)).isEqualTo("completed");
     }
 }

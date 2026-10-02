@@ -56,6 +56,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -222,13 +223,28 @@ class ResumableUploadServiceImplTest {
             UploadSession session = session("uploading");
             session.setExpiresAt(Date.from(Instant.now().minus(1, ChronoUnit.HOURS)));
             when(uploadSessionMapper.selectOne(any())).thenReturn(session);
+            when(uploadSessionMapper.update(isNull(), any())).thenReturn(1);
             when(uploadChunkMapper.selectList(any())).thenReturn(chunkRecords(0, 1, 2));
 
             UploadSessionStatusResponse response = uploadService.getSessionStatus(UPLOAD_ID, user);
 
             assertEquals("expired", response.getStatus());
             assertFalse(response.isReadyToComplete());
-            verify(uploadSessionMapper).updateById(session);
+            verify(uploadSessionMapper, never()).updateById(any(UploadSession.class));
+        }
+
+        @Test
+        void whenExpiryLosesRaceToAnotherChange_shouldReportTheCurrentRow() {
+            UploadSession stale = session("uploading");
+            stale.setExpiresAt(Date.from(Instant.now().minus(1, ChronoUnit.HOURS)));
+            UploadSession current = session("aborted");
+            current.setExpiresAt(stale.getExpiresAt());
+            when(uploadSessionMapper.selectOne(any())).thenReturn(stale);
+            when(uploadSessionMapper.update(isNull(), any())).thenReturn(0);
+            when(uploadSessionMapper.selectById(SESSION_ID)).thenReturn(current);
+            when(uploadChunkMapper.selectList(any())).thenReturn(chunkRecords(0));
+
+            assertEquals("aborted", uploadService.getSessionStatus(UPLOAD_ID, user).getStatus());
         }
 
         @Test
@@ -244,7 +260,7 @@ class ResumableUploadServiceImplTest {
             assertEquals(CHUNK_SIZE, response.getChunkSize());
             assertNotNull(response.getExpiresAt());
             assertTrue(response.isReadyToComplete());
-            verify(uploadSessionMapper, never()).updateById(any(UploadSession.class));
+            verify(uploadSessionMapper, never()).update(any(), any());
         }
 
         @Test
@@ -304,6 +320,7 @@ class ResumableUploadServiceImplTest {
         void shouldStoreVerifiedChunkAndMoveSessionToUploading() throws Exception {
             UploadSession session = session("created");
             when(uploadSessionMapper.selectOne(any())).thenReturn(session);
+            when(uploadSessionMapper.update(isNull(), any())).thenReturn(1);
             when(uploadChunkMapper.selectCount(any())).thenReturn(1L);
 
             UploadChunkResponse response = upload(0, "bytes 0-3/10", chunk(0));
@@ -325,7 +342,23 @@ class ResumableUploadServiceImplTest {
             assertArrayEquals(chunk(0), Files.readAllBytes(chunkFile(0, chunk(0))));
             assertEquals(1, countEntries(sessionDirectory()));
             assertEquals("uploading", session.getStatus());
-            verify(uploadSessionMapper).updateById(session);
+            verify(uploadSessionMapper).update(isNull(), any());
+            verify(uploadSessionMapper, never()).updateById(any(UploadSession.class));
+        }
+
+        @Test
+        void whenSessionMovedOnDuringUpload_shouldStoreChunkWithoutRevertingStatus() throws Exception {
+            UploadSession session = session("created");
+            when(uploadSessionMapper.selectOne(any())).thenReturn(session);
+            // Another request changed the row after this one read it, so the conditional update matches nothing.
+            when(uploadSessionMapper.update(isNull(), any())).thenReturn(0);
+            when(uploadChunkMapper.selectCount(any())).thenReturn(1L);
+
+            upload(0, "bytes 0-3/10", chunk(0));
+
+            verify(uploadChunkMapper).insert(any(UploadChunk.class));
+            assertEquals("created", session.getStatus(), "the stale snapshot is not presented as the new state");
+            verify(uploadSessionMapper, never()).updateById(any(UploadSession.class));
         }
 
         @Test
@@ -337,7 +370,7 @@ class ResumableUploadServiceImplTest {
 
             assertTrue(response.isReadyToComplete());
             assertTrue(Files.isRegularFile(chunkFile(2, chunk(2))));
-            verify(uploadSessionMapper, never()).updateById(any(UploadSession.class));
+            verify(uploadSessionMapper, never()).update(any(), any());
         }
 
         @Test

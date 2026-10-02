@@ -2,6 +2,7 @@ package com.zachary.BI.service.impl;
 
 import cn.hutool.core.io.FileUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.zachary.BI.common.ErrorCode;
 import com.zachary.BI.config.UploadProperties;
 import com.zachary.BI.exception.BusinessException;
@@ -195,9 +196,16 @@ public class ResumableUploadServiceImpl implements ResumableUploadService {
         if (session.getExpiresAt().before(new Date())
                 && UploadSessionStatusEnum.isActive(session.getStatus())) {
 
-            // Expired uploads cannot receive more chunks.
-            session.setStatus(UploadSessionStatusEnum.EXPIRED.getValue());
-            uploadSessionMapper.updateById(session);
+            // Expired uploads cannot receive more chunks. Only an active session may be expired here; a concurrent
+            // request (or the cleanup task) may already have changed it.
+            int changed = uploadSessionMapper.update(null, new LambdaUpdateWrapper<UploadSession>()
+                    .eq(UploadSession::getId, session.getId())
+                    .in(UploadSession::getStatus, UploadSessionStatusEnum.CREATED.getValue(),
+                            UploadSessionStatusEnum.UPLOADING.getValue())
+                    .set(UploadSession::getStatus, UploadSessionStatusEnum.EXPIRED.getValue()));
+            // Report the row's real state rather than the snapshot this request started with.
+            session = changed == 1 ? withStatus(session, UploadSessionStatusEnum.EXPIRED)
+                    : uploadSessionMapper.selectById(session.getId());
         }
 
         List<Integer> uploadedIndexes = uploadChunkMapper.selectList(
@@ -453,9 +461,16 @@ public class ResumableUploadServiceImpl implements ResumableUploadService {
         }
 
         // Update the status only after a validated chunk record was created.
+        // Conditional on "created": while this chunk was being received, other chunks and even a completion may
+        // have moved the session on. Writing the snapshot read at the start back would revert that.
         if (UploadSessionStatusEnum.CREATED.getValue().equals(session.getStatus())) {
-            session.setStatus(UploadSessionStatusEnum.UPLOADING.getValue());
-            uploadSessionMapper.updateById(session);
+            int changed = uploadSessionMapper.update(null, new LambdaUpdateWrapper<UploadSession>()
+                    .eq(UploadSession::getId, session.getId())
+                    .eq(UploadSession::getStatus, UploadSessionStatusEnum.CREATED.getValue())
+                    .set(UploadSession::getStatus, UploadSessionStatusEnum.UPLOADING.getValue()));
+            if (changed == 1) {
+                session.setStatus(UploadSessionStatusEnum.UPLOADING.getValue());
+            }
         }
 
         return buildChunkResponse(session, chunkIndex, false);
@@ -924,6 +939,11 @@ public class ResumableUploadServiceImpl implements ResumableUploadService {
                 );
             }
         }
+    }
+
+    private static UploadSession withStatus(UploadSession session, UploadSessionStatusEnum status) {
+        session.setStatus(status.getValue());
+        return session;
     }
 
     private long expectedChunkSize(UploadSession session, int chunkIndex) {
