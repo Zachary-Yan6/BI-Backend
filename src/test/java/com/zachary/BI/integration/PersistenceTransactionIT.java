@@ -3,7 +3,6 @@ package com.zachary.BI.integration;
 import com.zachary.BI.exception.BusinessException;
 import com.zachary.BI.integration.support.AbstractIntegrationTest;
 import com.zachary.BI.service.AnalysisCompletionService;
-import com.zachary.BI.service.AnalysisJobService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
@@ -21,9 +20,6 @@ class PersistenceTransactionIT extends AbstractIntegrationTest {
 
     @Autowired
     private AnalysisCompletionService analysisCompletionService;
-
-    @Autowired
-    private AnalysisJobService analysisJobService;
 
     @Test
     void persistSuccess_shouldCommitChartJobAndEventTogether() {

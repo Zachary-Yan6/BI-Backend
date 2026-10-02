@@ -3,6 +3,7 @@ package com.zachary.BI.integration.support;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zachary.BI.GenAi;
+import com.zachary.BI.service.AnalysisJobService;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -14,6 +15,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.RequestBuilder;
 
@@ -62,6 +64,15 @@ public abstract class AbstractIntegrationTest {
 
     @MockitoBean
     protected GenAi genAi;
+
+    /**
+     * Calls the real service unless a test stubs it, and is reset after every test.
+     * Declared here rather than in the one test class that injects failures: a bean override in a single class
+     * gives it its own Spring context, and because cached contexts stay alive, that context's RabbitMQ consumers
+     * would keep competing for the shared queue (with an unstubbed GenAi mock) and break later test classes.
+     */
+    @MockitoSpyBean
+    protected AnalysisJobService analysisJobService;
 
     @DynamicPropertySource
     static void infrastructureProperties(DynamicPropertyRegistry registry) {

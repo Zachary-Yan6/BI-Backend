@@ -36,6 +36,7 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import jakarta.annotation.Resource;
@@ -57,7 +58,11 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     private static final long MAX_CHART_DATA_BYTES = 60 * 1024L;
     private static final String CHART_DATA_TRUNCATION_NOTICE =
             "\n\n# Analysis input was truncated to fit the safe chart-data limit.\n";
+    /** One retry covers a competing job that finishes exactly between our insert and the lookup. */
+    private static final int MAX_SUBMIT_ATTEMPTS = 2;
 
+    @Resource
+    private TransactionTemplate transactionTemplate;
     @Resource
     private ChartService chartService;
     @Resource
@@ -286,15 +291,23 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         chart.setName(request.getName());
         chart.setUserId(user.getId());
         chart.setGoal(request.getGoal());
-        ThrowUtils.throwIf(!chartService.save(chart), ErrorCode.SYSTEM_ERROR, "Failed to save data");
 
-        AnalysisJob job;
-        try {
-            job = analysisJobService.create(chart.getId(), user.getId(), fingerprint);
-        } catch (DuplicateKeyException exception) {
-            // The unique active fingerprint prevents duplicate active analyses for the same source.
-            chartService.removeById(chart.getId());
-            return reusedResponse(analysisJobService.findActiveJob(user.getId(), fingerprint).orElseThrow(() -> exception));
+        AnalysisJob job = null;
+        for (int attempt = 1; job == null; attempt++) {
+            try {
+                job = createChartAndJob(chart, user.getId(), fingerprint);
+            } catch (DuplicateKeyException exception) {
+                // The unique active fingerprint prevents duplicate active analyses for the same source; the
+                // transaction already rolled back this request's chart.
+                Optional<AnalysisJob> winner = analysisJobService.findActiveJob(user.getId(), fingerprint);
+                if (winner.isPresent()) {
+                    return reusedResponse(winner.get());
+                }
+                // The competing job finished between our insert and this lookup, so the key is free again.
+                ThrowUtils.throwIf(attempt >= MAX_SUBMIT_ATTEMPTS, ErrorCode.OPERATION_ERROR,
+                        "The same analysis was submitted concurrently. Please try again.");
+                chart.setId(null);
+            }
         }
 
         try {
@@ -310,6 +323,19 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         response.setChartId(chart.getId());
         response.setJobId(job.getId());
         return response;
+    }
+
+    /**
+     * Inserts the chart and its job atomically, so a failed job insert never leaves a chart stuck in "queued".
+     * TransactionTemplate rather than @Transactional: this is called from inside the class, and such self-calls
+     * bypass the Spring proxy that applies @Transactional.
+     * The message is published by the caller only after this commits, so the consumer can always see the job.
+     */
+    private AnalysisJob createChartAndJob(Chart chart, long userId, String fingerprint) {
+        return transactionTemplate.execute(status -> {
+            ThrowUtils.throwIf(!chartService.save(chart), ErrorCode.SYSTEM_ERROR, "Failed to save data");
+            return analysisJobService.create(chart.getId(), userId, fingerprint);
+        });
     }
 
     private void validateGenerationRequest(GenChartByAIRequest request) {
