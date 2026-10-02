@@ -384,21 +384,23 @@ class ResumableUploadServiceImplTest {
         }
 
         @Test
-        void bodyShorterThanDeclared_shouldBeRejected() {
+        void bodyShorterThanDeclared_shouldBeRejectedAndTempFileRemoved() throws Exception {
             when(uploadSessionMapper.selectOne(any())).thenReturn(session("uploading"));
 
             assertBusinessError(ErrorCode.PARAMS_ERROR,
                     () -> uploadWith(0, "bytes 0-3/10", sha256(chunk(0)), 4, "abc".getBytes()));
             verify(uploadChunkMapper, never()).insert(any(UploadChunk.class));
+            assertEquals(0, countEntries(sessionDirectory()));
         }
 
         @Test
-        void checksumMismatch_shouldBeRejected() {
+        void checksumMismatch_shouldBeRejectedAndTempFileRemoved() throws Exception {
             when(uploadSessionMapper.selectOne(any())).thenReturn(session("uploading"));
 
             assertBusinessError(ErrorCode.PARAMS_ERROR,
                     () -> uploadWith(0, "bytes 0-3/10", sha256(chunk(1)), 4, chunk(0)));
             verify(uploadChunkMapper, never()).insert(any(UploadChunk.class));
+            assertEquals(0, countEntries(sessionDirectory()));
         }
 
         @Test

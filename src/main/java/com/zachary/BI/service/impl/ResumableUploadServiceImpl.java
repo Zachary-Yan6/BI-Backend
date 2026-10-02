@@ -368,6 +368,19 @@ public class ResumableUploadServiceImpl implements ResumableUploadService {
 
             actualSha256 = HexFormat.of().formatHex(digest.digest());
 
+            // These checks stay inside the try so a rejected body never leaves its temporary file behind.
+            ThrowUtils.throwIf(
+                    writtenBytes != expectedLength,
+                    ErrorCode.PARAMS_ERROR,
+                    "Chunk body is shorter than the expected size."
+            );
+
+            ThrowUtils.throwIf(
+                    !actualSha256.equalsIgnoreCase(chunkSha256),
+                    ErrorCode.PARAMS_ERROR,
+                    "Chunk SHA-256 verification failed."
+            );
+
         } catch (NoSuchAlgorithmException exception) {
             Files.deleteIfExists(temporaryFile);
             throw new BusinessException(
@@ -378,18 +391,6 @@ public class ResumableUploadServiceImpl implements ResumableUploadService {
             Files.deleteIfExists(temporaryFile);
             throw exception;
         }
-
-        ThrowUtils.throwIf(
-                writtenBytes != expectedLength,
-                ErrorCode.PARAMS_ERROR,
-                "Chunk body is shorter than the expected size."
-        );
-
-        ThrowUtils.throwIf(
-                !actualSha256.equalsIgnoreCase(chunkSha256),
-                ErrorCode.PARAMS_ERROR,
-                "Chunk SHA-256 verification failed."
-        );
 
         // Hash is part of the final filename. Two conflicting concurrent writes
         // can never overwrite each other.
@@ -742,6 +743,12 @@ public class ResumableUploadServiceImpl implements ResumableUploadService {
 
         // getOwnedSession checks both uploadId and authenticated user ID.
         UploadSession session = getOwnedSession(uploadId, user.getId());
+
+        ThrowUtils.throwIf(
+                UploadSessionStatusEnum.EXPIRED.getValue().equals(session.getStatus()),
+                ErrorCode.OPERATION_ERROR,
+                "The uploaded file has expired. Please upload it again."
+        );
 
         ThrowUtils.throwIf(
                 !UploadSessionStatusEnum.COMPLETED.getValue().equals(session.getStatus()),

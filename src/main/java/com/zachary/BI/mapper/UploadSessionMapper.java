@@ -5,6 +5,8 @@ import com.zachary.BI.model.entity.UploadSession;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
 
+import java.util.Date;
+
 public interface UploadSessionMapper extends BaseMapper<UploadSession> {
     @Update("""
     UPDATE upload_session
@@ -68,4 +70,43 @@ public interface UploadSessionMapper extends BaseMapper<UploadSession> {
             @Param("uploadingStatus") String uploadingStatus,
             @Param("completingStatus") String completingStatus
     );
+
+    /**
+     * Releases completion claims whose process died mid-merge. Chunks are kept, so the user can complete again.
+     * completionStartedAt is written with NOW(), so the lease is measured with the database clock.
+     */
+    @Update("""
+    UPDATE upload_session
+    SET status = 'uploading',
+        completionClaimId = NULL,
+        completionStartedAt = NULL,
+        updateTime = NOW()
+    WHERE status = 'completing'
+      AND completionStartedAt < NOW() - INTERVAL #{leaseSeconds} SECOND
+    """)
+    int releaseStaleCompletions(@Param("leaseSeconds") long leaseSeconds);
+
+    /**
+     * Expires unfinished sessions. expiresAt is written by the JVM, so the cutoff comes from the JVM as well.
+     */
+    @Update("""
+    UPDATE upload_session
+    SET status = 'expired',
+        updateTime = NOW()
+    WHERE status IN ('created', 'uploading')
+      AND expiresAt < #{now}
+    """)
+    int expireAbandonedSessions(@Param("now") Date now);
+
+    /**
+     * Ends the retention period of completed uploads. completedAt is written with NOW().
+     */
+    @Update("""
+    UPDATE upload_session
+    SET status = 'expired',
+        updateTime = NOW()
+    WHERE status = 'completed'
+      AND completedAt < NOW() - INTERVAL #{retentionSeconds} SECOND
+    """)
+    int expireCompletedUploads(@Param("retentionSeconds") long retentionSeconds);
 }
