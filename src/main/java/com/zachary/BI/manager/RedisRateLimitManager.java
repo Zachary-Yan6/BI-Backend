@@ -42,7 +42,8 @@ public class RedisRateLimitManager {
                 String.valueOf(MAX_REQUESTS)
         );
         if (!Long.valueOf(1L).equals(allowed)) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Too many requests");
+            // A distinct code lets the frontend tell "slow down" apart from a server failure.
+            throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Too many requests. Please try again shortly.");
         }
     }
 }
