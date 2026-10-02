@@ -85,7 +85,7 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
         Map<String, Object> job = jdbcTemplate.queryForMap("select * from analysis_job where id = ?", jobId);
         assertThat(job.get("activeFingerprint")).as("finished jobs release the dedup key").isNull();
         assertThat(job.get("finishedAt")).isNotNull();
-        assertThat(eventStatuses(user, jobId)).containsExactlyInAnyOrder("queued", "running", "succeeded");
+        assertThat(eventStatuses(user, jobId)).containsExactly("queued", "running", "succeeded");
 
         JsonNode jobs = assertSuccess(postJson("/chart/job/list-by-chart", user.session(),
                 Map.of("chartIds", List.of(chartId))));
@@ -125,8 +125,8 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
         Map<String, Object> job = jdbcTemplate.queryForMap("select retryCount, failureReason from analysis_job where id = ?", jobId);
         assertThat(job.get("retryCount")).isEqualTo(1);
         assertThat(job.get("failureReason")).as("cleared on success").isNull();
-        // createTime has one-second resolution, so events in the same second have no guaranteed order.
-        assertThat(eventStatuses(user, jobId)).contains("queued", "running", "retrying", "succeeded");
+        // Events are ordered by createTime and then id, so the timeline is exact even within one second.
+        assertThat(eventStatuses(user, jobId)).containsExactly("queued", "running", "retrying", "running", "succeeded");
     }
 
     @Test

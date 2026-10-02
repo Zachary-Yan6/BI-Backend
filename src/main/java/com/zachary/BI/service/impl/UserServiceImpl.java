@@ -6,7 +6,6 @@ import cn.hutool.core.collection.CollUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.zachary.BI.common.ErrorCode;
-import com.zachary.BI.constant.CommonConstant;
 import com.zachary.BI.exception.BusinessException;
 import com.zachary.BI.exception.ThrowUtils;
 import com.zachary.BI.mapper.UserMapper;
@@ -19,6 +18,7 @@ import com.zachary.BI.service.UserService;
 import com.zachary.BI.utils.SqlUtils;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
@@ -243,8 +243,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         queryWrapper.eq(StringUtils.isNotBlank(userRole), "userRole", userRole);
         queryWrapper.like(StringUtils.isNotBlank(userProfile), "userProfile", userProfile);
         queryWrapper.like(StringUtils.isNotBlank(userName), "userName", userName);
-        queryWrapper.orderBy(SqlUtils.validSortField(sortField), sortOrder.equals(CommonConstant.SORT_ORDER_ASC),
-                sortField);
+        // Never userPassword: ordering by the hash would let a caller probe it one comparison at a time.
+        SqlUtils.applySort(queryWrapper, sortField, sortOrder,
+                Set.of("createTime", "updateTime", "userName", "userAccount", "userRole"));
         return queryWrapper;
     }
 }

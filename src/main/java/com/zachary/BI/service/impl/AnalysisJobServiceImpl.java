@@ -223,14 +223,19 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         return analysisJobMapper.selectList(new LambdaQueryWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getUserId, userId)
                 .in(AnalysisJob::getChartId, chartIds)
-                .orderByDesc(AnalysisJob::getCreateTime));
+                .orderByDesc(AnalysisJob::getCreateTime)
+                .orderByDesc(AnalysisJob::getId));
     }
 
     @Override
     public List<AnalysisJobEvent> listEvents(long jobId) {
+        // createTime has one-second resolution and a job often records several events within one second.
+        // Snowflake ids grow with time (milliseconds, then a sequence), so they give the exact recording order;
+        // without them the timeline relied on whatever order the query plan happened to produce.
         return analysisJobEventMapper.selectList(new LambdaQueryWrapper<AnalysisJobEvent>()
                 .eq(AnalysisJobEvent::getJobId, jobId)
-                .orderByAsc(AnalysisJobEvent::getCreateTime));
+                .orderByAsc(AnalysisJobEvent::getCreateTime)
+                .orderByAsc(AnalysisJobEvent::getId));
     }
 
     @Override

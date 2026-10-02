@@ -103,6 +103,16 @@ class UserAccountIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void userList_shouldNotBeSortableByPasswordHash() throws Exception {
+        TestUser admin = registerAndLoginAdmin();
+
+        // Ordering by the hash would let an admin probe other users' hashes one comparison at a time.
+        assertErrorCode(postJson("/user/list/page", admin.session(), Map.of("sortField", "userPassword")),
+                PARAMS_ERROR);
+        assertSuccess(postJson("/user/list/page", admin.session(), Map.of("sortField", "createTime")));
+    }
+
+    @Test
     void bannedUser_shouldNotBeAbleToLogIn() throws Exception {
         TestUser user = registerAndLogin();
         jdbcTemplate.update("update user set userRole = 'ban' where id = ?", user.id());
