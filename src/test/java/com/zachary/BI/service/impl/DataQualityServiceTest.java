@@ -6,21 +6,18 @@ import com.zachary.BI.model.vo.DataQualityReport;
 import com.zachary.BI.utils.ExcelUtils;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.mockito.MockedStatic;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.mockStatic;
 
 class DataQualityServiceTest {
 
@@ -229,11 +226,19 @@ class DataQualityServiceTest {
 
     // endregion
 
-    private DataQualityReport inspectRows(List<List<String>> rows) throws Exception {
-        try (MockedStatic<ExcelUtils> excelUtils = mockStatic(ExcelUtils.class)) {
-            excelUtils.when(() -> ExcelUtils.readSpreadsheet(any(Path.class), anyString())).thenReturn(rows);
-            return dataQualityService.inspect(tempDir.resolve("unused.csv"), "csv");
-        }
+    @Test
+    void truncatedSpreadsheet_shouldBeFlaggedWithoutRequiringConfirmation() {
+        DataQualityReport report = dataQualityService.inspect(new ExcelUtils.Spreadsheet(
+                new ArrayList<>(List.of(List.of("month", "sales"), List.of("Jan", "10"))), true));
+
+        assertTrue(report.isTruncated());
+        assertHasIssue(report, "INFO", null, "The file exceeds " + ExcelUtils.MAX_DATA_ROWS + " data rows or "
+                + ExcelUtils.MAX_COLUMNS + " columns; only that part was inspected.");
+        assertEquals("READY", report.getRecommendation(), "a large file is not a quality problem");
+    }
+
+    private DataQualityReport inspectRows(List<List<String>> rows) {
+        return dataQualityService.inspect(new ExcelUtils.Spreadsheet(rows, false));
     }
 
     private static DataQualityColumn column(DataQualityReport report, String name) {
