@@ -2,11 +2,9 @@ package com.zachary.BI.integration;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.zachary.BI.integration.support.AbstractIntegrationTest;
-import com.zachary.BI.service.AnalysisJobService;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
-import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -23,14 +21,11 @@ import static org.mockito.Mockito.when;
 
 /**
  * Failure injection around job creation, checked against real MySQL transactions.
- * The spy makes this class use its own Spring context; the containers are still shared.
+ * Uses the {@code analysisJobService} spy declared in {@link AbstractIntegrationTest}.
  */
 class AnalysisSubmissionIT extends AbstractIntegrationTest {
 
     private static final byte[] CSV = "month,sales\nJan,10\nFeb,12\n".getBytes(StandardCharsets.UTF_8);
-
-    @MockitoSpyBean
-    private AnalysisJobService analysisJobService;
 
     @Test
     void failedJobInsert_shouldNotLeaveAnOrphanChart() throws Exception {
