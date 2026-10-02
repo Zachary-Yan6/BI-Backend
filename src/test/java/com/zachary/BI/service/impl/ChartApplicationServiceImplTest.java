@@ -33,6 +33,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
@@ -59,7 +61,9 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -83,6 +87,8 @@ class ChartApplicationServiceImplTest {
     private BiMessageProducer biMessageProducer;
     @Mock
     private ResumableUploadService resumableUploadService;
+    @Mock
+    private TransactionTemplate transactionTemplate;
 
     @InjectMocks
     private ChartApplicationServiceImpl chartApplicationService;
@@ -93,6 +99,9 @@ class ChartApplicationServiceImplTest {
     void setUp() {
         user = new User();
         user.setId(USER_ID);
+        // Run the callback directly; rollback itself is covered by AnalysisSubmissionIT against real MySQL.
+        lenient().when(transactionTemplate.execute(any()))
+                .thenAnswer(invocation -> invocation.<TransactionCallback<?>>getArgument(0).doInTransaction(null));
     }
 
     // region chart CRUD
@@ -478,12 +487,31 @@ class ChartApplicationServiceImplTest {
 
             assertTrue(response.isReused());
             assertEquals(31L, response.getJobId());
-            verify(chartService).removeById(20L);
+            // The transaction rollback removes this request's chart; no manual delete is needed.
+            verify(chartService, never()).removeById(anyLong());
             verifyNoInteractions(biMessageProducer);
         }
 
         @Test
-        void generateChart_whenDuplicateWinnerVanished_shouldRethrowDuplicate() throws Exception {
+        void generateChart_whenDuplicateWinnerFinishedMeanwhile_shouldRetryAndQueueNewJob() throws Exception {
+            MockMultipartFile file = csvFile("a.csv", "a\n1\n");
+            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
+            stubChartSave(20L);
+            when(analysisJobService.create(eq(20L), eq(USER_ID), anyString()))
+                    .thenThrow(new DuplicateKeyException("duplicate"))
+                    .thenReturn(job(30L, 20L));
+
+            BiResponse response = chartApplicationService.generateChart(file, validRequest(), user);
+
+            assertFalse(response.isReused());
+            assertEquals(30L, response.getJobId());
+            verify(transactionTemplate, times(2)).execute(any());
+            verify(biMessageProducer).sendMessage(30L);
+        }
+
+        @Test
+        void generateChart_whenDuplicatePersistsWithoutWinner_shouldAskUserToRetry() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
             when(dataQualityService.inspect(file)).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
@@ -491,8 +519,10 @@ class ChartApplicationServiceImplTest {
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString()))
                     .thenThrow(new DuplicateKeyException("duplicate"));
 
-            assertThrows(DuplicateKeyException.class,
+            assertBusinessError(ErrorCode.OPERATION_ERROR,
                     () -> chartApplicationService.generateChart(file, validRequest(), user));
+            verify(transactionTemplate, times(2)).execute(any());
+            verifyNoInteractions(biMessageProducer);
         }
 
         @Test
