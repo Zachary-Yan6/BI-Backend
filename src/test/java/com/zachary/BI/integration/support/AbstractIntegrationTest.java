@@ -122,7 +122,7 @@ public abstract class AbstractIntegrationTest {
                 "userPassword", PASSWORD,
                 "checkPassword", PASSWORD));
         long userId = assertSuccess(registered).asLong();
-        // Set the role before login: some checks read the User snapshot stored in the session at login time.
+        // Roles are always reloaded from MySQL, so setting the role before or after login makes no difference.
         jdbcTemplate.update("update user set userRole = ? where id = ?", role, userId);
 
         MockHttpSession session = new MockHttpSession();

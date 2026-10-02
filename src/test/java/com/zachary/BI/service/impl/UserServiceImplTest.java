@@ -134,9 +134,30 @@ class UserServiceImplTest {
 
         LoginUserVO vo = userService.userLogin("alice", "password1", request);
 
-        assertSame(user, request.getSession().getAttribute(USER_LOGIN_STATE));
+        // Only the identity goes into the session: no role to go stale, no password hash.
+        User sessionUser = (User) request.getSession().getAttribute(USER_LOGIN_STATE);
+        assertEquals(5L, sessionUser.getId());
+        assertNull(sessionUser.getUserRole());
+        assertNull(sessionUser.getUserPassword());
         assertEquals(5L, vo.getId());
         assertEquals("Alice", vo.getUserName());
+    }
+
+    @Test
+    void userLogin_whenBanned_shouldRejectWithoutSession() {
+        when(userMapper.selectOne(any())).thenReturn(user(5L, "ban"));
+
+        assertBusinessError(ErrorCode.NO_AUTH_ERROR, () -> userService.userLogin("alice", "password1", request));
+        assertNull(request.getSession().getAttribute(USER_LOGIN_STATE));
+    }
+
+    @Test
+    void getLoginUser_whenBannedAfterLogin_shouldReject() {
+        request.getSession().setAttribute(USER_LOGIN_STATE, user(5L, "user"));
+        when(userMapper.selectById(5L)).thenReturn(user(5L, "ban"));
+
+        assertBusinessError(ErrorCode.NO_AUTH_ERROR, () -> userService.getLoginUser(request));
+        assertNull(userService.getLoginUserPermitNull(request));
     }
 
     @Test
@@ -182,9 +203,12 @@ class UserServiceImplTest {
     }
 
     @Test
-    void isAdmin_shouldCheckRole() {
+    void isAdmin_shouldCheckCurrentRoleFromDatabase() {
         assertFalse(userService.isAdmin(request));
         request.getSession().setAttribute(USER_LOGIN_STATE, user(1L, "admin"));
+        // Demoted since login: the session snapshot still says admin, the database does not.
+        when(userMapper.selectById(1L)).thenReturn(user(1L, "user"), user(1L, "admin"));
+        assertFalse(userService.isAdmin(request));
         assertTrue(userService.isAdmin(request));
 
         assertFalse(userService.isAdmin((User) null));

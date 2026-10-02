@@ -38,6 +38,19 @@ class ChartManagementIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void demotedAdmin_shouldLoseAdminRightsWithoutLoggingOut() throws Exception {
+        TestUser owner = registerAndLogin();
+        TestUser formerAdmin = registerAndLoginAdmin();
+        long chartId = insertChart(owner.id(), Map.of("name", "Owned by someone else"));
+        // The session still holds the User object captured at login, when the role was admin.
+        jdbcTemplate.update("update user set userRole = 'user' where id = ?", formerAdmin.id());
+
+        assertErrorCode(postJson("/chart/delete", formerAdmin.session(), Map.of("id", chartId)), 40101);
+        assertThat(jdbcTemplate.queryForObject("select isDelete from chart where id = ?", Integer.class, chartId))
+                .isZero();
+    }
+
+    @Test
     void otherUsersCannotEditOrDeleteChart_butAdminCan() throws Exception {
         TestUser owner = registerAndLogin();
         TestUser stranger = registerAndLogin();
