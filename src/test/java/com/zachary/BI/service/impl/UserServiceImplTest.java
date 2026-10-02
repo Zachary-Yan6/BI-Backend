@@ -285,7 +285,8 @@ class UserServiceImplTest {
     void getQueryWrapper_withEmptyRequest_shouldHaveNoConditions() {
         QueryWrapper<User> wrapper = userService.getQueryWrapper(new UserQueryRequest());
 
-        assertEquals("", wrapper.getCustomSqlSegment());
+        // No filters; only the id tie-breaker that keeps pagination deterministic.
+        assertEquals("ORDER BY id ASC", wrapper.getCustomSqlSegment().trim());
     }
 
     // endregion

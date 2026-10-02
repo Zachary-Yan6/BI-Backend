@@ -6,7 +6,6 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.zachary.BI.BiMq.BiMessageProducer;
 import com.zachary.BI.common.DeleteRequest;
 import com.zachary.BI.common.ErrorCode;
-import com.zachary.BI.constant.CommonConstant;
 import com.zachary.BI.exception.BusinessException;
 import com.zachary.BI.exception.ThrowUtils;
 import com.zachary.BI.manager.RedisRateLimitManager;
@@ -58,6 +57,9 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     private static final long MAX_CHART_DATA_BYTES = 60 * 1024L;
     private static final String CHART_DATA_TRUNCATION_NOTICE =
             "\n\n# Analysis input was truncated to fit the safe chart-data limit.\n";
+    /** Columns clients may sort chart lists by; large text columns and internal fields are deliberately absent. */
+    private static final Set<String> CHART_SORT_FIELDS =
+            Set.of("createTime", "updateTime", "generatedAt", "name", "chartType", "status");
     /** One retry covers a competing job that finishes exactly between our insert and the lookup. */
     private static final int MAX_SUBMIT_ATTEMPTS = 2;
 
@@ -478,8 +480,7 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         wrapper.like(StringUtils.isNotBlank(request.getName()), "name", request.getName());
         wrapper.eq(StringUtils.isNotBlank(request.getChartType()), "chartType", request.getChartType());
         wrapper.eq(ObjectUtils.isNotEmpty(request.getUserId()), "userId", request.getUserId());
-        wrapper.orderBy(SqlUtils.validSortField(request.getSortField()),
-                CommonConstant.SORT_ORDER_ASC.equals(request.getSortOrder()), request.getSortField());
+        SqlUtils.applySort(wrapper, request.getSortField(), request.getSortOrder(), CHART_SORT_FIELDS);
         return wrapper;
     }
 

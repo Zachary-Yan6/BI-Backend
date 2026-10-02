@@ -3,13 +3,17 @@ package com.zachary.BI.integration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.zachary.BI.integration.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -65,6 +69,40 @@ class ChartManagementIT extends AbstractIntegrationTest {
         assertSuccess(postJson("/chart/delete", admin.session(), Map.of("id", chartId)));
         assertThat(jdbcTemplate.queryForObject("select isDelete from chart where id = ?", Integer.class, chartId))
                 .isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"createTime", ""})
+    void paging_throughChartsWithEqualSortValues_shouldReturnEachChartExactlyOnce(String sortField) throws Exception {
+        TestUser owner = registerAndLogin();
+        Set<Long> inserted = new HashSet<>();
+        for (int i = 0; i < 30; i++) {
+            // Same second for every row: createTime alone cannot order them.
+            inserted.add(insertChart(owner.id(), Map.of("name", "Tie " + i, "createTime", "2026-01-01 00:00:00")));
+        }
+
+        List<Long> seen = new ArrayList<>();
+        for (int current = 1; current <= 3; current++) {
+            JsonNode page = assertSuccess(postJson("/chart/my/list/page/vo", owner.session(),
+                    Map.of("current", current, "pageSize", 10, "sortField", sortField, "sortOrder", "descend")));
+            page.get("records").forEach(chart -> seen.add(chart.get("id").asLong()));
+        }
+
+        // With ties and LIMIT, MySQL may return tied rows in a different order for each page, so without a unique
+        // tie-breaker some charts show up on two pages and others on none.
+        assertThat(seen).hasSize(30).doesNotHaveDuplicates();
+        assertThat(new HashSet<>(seen)).isEqualTo(inserted);
+    }
+
+    @Test
+    void sortingByAColumnOutsideTheAllowlist_shouldBeAParameterError() throws Exception {
+        TestUser owner = registerAndLogin();
+
+        // Previously any identifier-shaped name reached SQL: an unknown column became a 500.
+        assertErrorCode(postJson("/chart/my/list/page/vo", owner.session(),
+                Map.of("sortField", "noSuchColumn")), 40000);
+        assertErrorCode(postJson("/chart/my/list/page/vo", owner.session(),
+                Map.of("sortField", "chartData")), 40000);
     }
 
     @Test

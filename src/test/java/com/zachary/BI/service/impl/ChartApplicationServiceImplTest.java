@@ -331,7 +331,8 @@ class ChartApplicationServiceImplTest {
 
             chartApplicationService.listCharts(request);
 
-            assertEquals("", capturedQueryWrapper().getCustomSqlSegment());
+            // No filters; only the id tie-breaker that keeps pagination deterministic.
+            assertEquals("ORDER BY id DESC", capturedQueryWrapper().getCustomSqlSegment().trim());
         }
 
         @Test
