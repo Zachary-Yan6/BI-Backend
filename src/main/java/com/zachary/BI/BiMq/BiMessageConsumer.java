@@ -36,6 +36,8 @@ public class BiMessageConsumer {
     private GenAi genAi;
     @Resource
     private AnalysisCompletionService analysisCompletionService;
+    @Resource
+    private AnalysisResultParser analysisResultParser;
 
     @RabbitListener(queues = BiMqConstant.BI_QUEUE_NAME, ackMode = "MANUAL")
     public void receiveMessage(String message, Channel channel,
@@ -69,18 +71,10 @@ public class BiMessageConsumer {
         String genResult;
 
         try {
-            String[] resultPart = genAi.doChat(buildUserInput(chart)).split("-----", 2);
-
-            if (resultPart.length < 2) {
-                throw new IllegalStateException("Invalid AI result format");
-            }
-
-            genChart = resultPart[0].trim()
-                    .replace("```javascript", "")
-                    .replace("```", "")
-                    .trim();
-
-            genResult = resultPart[1].trim();
+            // An answer without a valid JSON option or a conclusion is treated like a failed call and retried.
+            AnalysisResultParser.AnalysisResult result = analysisResultParser.parse(genAi.doChat(buildUserInput(chart)));
+            genChart = result.chartOption();
+            genResult = result.conclusion();
 
         } catch (Exception aiException) {
             // AI call or AI response format failed: use normal delayed retry logic.
@@ -169,7 +163,9 @@ public class BiMessageConsumer {
             userInput.append("Chart type: ").append(chart.getChartType()).append("\n");
         }
         userInput.append("My data: ").append(chart.getChartData()).append("\n");
-        userInput.append("Provide ECharts option JSON that can be rendered in the frontend. Return only the JSON object, then the analysis conclusion, separated by -----. Respond in English.\n");
+        userInput.append("Provide an ECharts option that can be rendered in the frontend. It must be strict JSON: "
+                + "double-quoted keys and strings, no JavaScript functions, no comments. Return only the JSON object, "
+                + "then the analysis conclusion, separated by -----. Respond in English.\n");
         return userInput.toString();
     }
 }

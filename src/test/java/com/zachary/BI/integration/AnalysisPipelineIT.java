@@ -117,6 +117,36 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void jsonFencedAiAnswer_shouldBeStoredAsCleanJson() throws Exception {
+        when(genAi.doChat(anyString())).thenReturn(
+                "```json\n{\n  \"xAxis\": {\"data\": [\"Jan\", \"Feb\", \"Mar\"]}\n}\n```\n-----\nSales grow every month.");
+        TestUser user = registerAndLogin();
+        JsonNode submitted = submit(user, uploadFile(user, "sales.csv", CSV), "Json fence");
+
+        awaitJobStatus(submitted.get("jobId").asLong(), "succeeded");
+
+        Map<String, Object> chart = jdbcTemplate.queryForMap("select genChart, genResult from chart where id = ?",
+                submitted.get("chartId").asLong());
+        assertThat(chart.get("genChart")).isEqualTo("{\"xAxis\":{\"data\":[\"Jan\",\"Feb\",\"Mar\"]}}");
+        assertThat(chart.get("genResult")).isEqualTo("Sales grow every month.");
+    }
+
+    @Test
+    void invalidAiChartOption_shouldBeRetriedInsteadOfStored() throws Exception {
+        when(genAi.doChat(anyString()))
+                .thenReturn("{\"tooltip\":{\"formatter\":function (p) { return p.name; }}}\n-----\nNot JSON.")
+                .thenReturn(AI_RESPONSE);
+        TestUser user = registerAndLogin();
+        long jobId = submit(user, uploadFile(user, "sales.csv", CSV), "Invalid option").get("jobId").asLong();
+
+        awaitJobStatus(jobId, "succeeded");
+
+        assertThat(jdbcTemplate.queryForObject("select retryCount from analysis_job where id = ?", Integer.class,
+                jobId)).isEqualTo(1);
+        assertThat(eventStatuses(user, jobId)).contains("retrying", "succeeded");
+    }
+
+    @Test
     void exhaustedRetries_shouldFailJobAndPublishToDeadLetterQueue_thenUserCanRetry() throws Exception {
         TestUser user = registerAndLogin();
         String fileToken = uploadFile(user, "sales.csv", CSV);
