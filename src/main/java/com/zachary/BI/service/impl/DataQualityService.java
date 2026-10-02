@@ -35,7 +35,7 @@ public class DataQualityService {
     );
 
     public DataQualityReport inspect(MultipartFile file) throws IOException {
-        return inspectRows(ExcelUtils.readSpreadsheet(file));
+        return inspect(ExcelUtils.read(file));
     }
 
     /**
@@ -45,7 +45,21 @@ public class DataQualityService {
             Path filePath,
             String sourceFileType
     ) throws IOException {
-        return inspectRows(ExcelUtils.readSpreadsheet(filePath, sourceFileType));
+        return inspect(ExcelUtils.read(filePath, sourceFileType));
+    }
+
+    /**
+     * Inspects rows that were already parsed, so a caller that also needs the CSV parses the file only once.
+     */
+    public DataQualityReport inspect(ExcelUtils.Spreadsheet spreadsheet) {
+        DataQualityReport report = inspectRows(spreadsheet.rows());
+        if (spreadsheet.truncated()) {
+            report.setTruncated(true);
+            // INFO, not WARNING: a large file is not a quality problem and must not force a confirmation step.
+            report.getIssues().add(new DataQualityIssue("INFO", null, "The file exceeds " + ExcelUtils.MAX_DATA_ROWS
+                    + " data rows or " + ExcelUtils.MAX_COLUMNS + " columns; only that part was inspected."));
+        }
+        return report;
     }
 
     /**

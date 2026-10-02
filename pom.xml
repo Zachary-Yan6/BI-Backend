@@ -26,7 +26,24 @@
         <hutool.version>5.8.47</hutool.version>
         <bi.build.directory>${project.basedir}/target</bi.build.directory>
         <jacoco.version>0.8.13</jacoco.version>
+        <!-- The version POI (via EasyExcel) is built against; see dependencyManagement below. -->
+        <commons-compress.version>1.25.0</commons-compress.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+                Testcontainers (test scope) depends on commons-compress 1.24.0 at a shallower depth than POI, so
+                Maven's nearest-wins mediation picked 1.24.0 and shipped it in the production jar. POI 5.2.5 needs
+                1.25.0: writing .xlsx failed with NoSuchMethodError on ZipArchiveOutputStream.putArchiveEntry.
+            -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>${commons-compress.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
     <dependencies>
 

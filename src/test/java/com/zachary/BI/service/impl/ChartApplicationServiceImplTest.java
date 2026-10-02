@@ -22,6 +22,7 @@ import com.zachary.BI.model.vo.DataQualityReport;
 import com.zachary.BI.service.AnalysisJobService;
 import com.zachary.BI.service.ChartService;
 import com.zachary.BI.service.ResumableUploadService;
+import com.zachary.BI.utils.ExcelUtils;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -386,7 +387,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_shouldQueueNewAnalysisJob() throws Exception {
             MockMultipartFile file = csvFile("Sales.CSV", "month,sales\nJan,10\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
             stubChartSave(20L);
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString())).thenReturn(job(30L, 20L));
@@ -414,7 +415,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_shouldRequireValidRequestFields() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             GenChartByAIRequest blankGoal = validRequest();
             blankGoal.setGoal(" ");
             GenChartByAIRequest blankName = validRequest();
@@ -429,7 +430,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_shouldRequireAcknowledgementOfQualityIssues() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(true));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(true));
 
             assertBusinessError(ErrorCode.PARAMS_ERROR,
                     () -> chartApplicationService.generateChart(file, validRequest(), user));
@@ -441,7 +442,7 @@ class ChartApplicationServiceImplTest {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
             GenChartByAIRequest request = validRequest();
             request.setQualityAcknowledged(true);
-            when(dataQualityService.inspect(file)).thenReturn(report(true));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(true));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.of(job(30L, 20L)));
 
             assertTrue(chartApplicationService.generateChart(file, request, user).isReused());
@@ -450,7 +451,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_whenSameAnalysisIsActive_shouldReuseItWithoutRateLimiting() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.of(job(30L, 20L)));
 
             BiResponse response = chartApplicationService.generateChart(file, validRequest(), user);
@@ -464,7 +465,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_whenChartSaveFails_shouldThrowSystemError() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
             when(chartService.save(any(Chart.class))).thenReturn(false);
 
@@ -476,7 +477,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_whenConcurrentDuplicateWins_shouldDiscardChartAndReuseWinner() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString()))
                     .thenReturn(Optional.empty(), Optional.of(job(31L, 21L)));
             stubChartSave(20L);
@@ -495,7 +496,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_whenDuplicateWinnerFinishedMeanwhile_shouldRetryAndQueueNewJob() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
             stubChartSave(20L);
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString()))
@@ -513,7 +514,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_whenDuplicatePersistsWithoutWinner_shouldAskUserToRetry() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
             stubChartSave(20L);
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString()))
@@ -528,7 +529,7 @@ class ChartApplicationServiceImplTest {
         @Test
         void generateChart_whenQueueUnavailable_shouldFailJobAndChart() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
-            when(dataQualityService.inspect(file)).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
             stubChartSave(20L);
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString())).thenReturn(job(30L, 20L));
@@ -568,7 +569,7 @@ class ChartApplicationServiceImplTest {
         void generateChart_shouldUseCompletedUploadAndItsHashAsIdentity() throws Exception {
             CompletedUploadFile upload = completedUpload("month,sales\nJan,10\n", "csv", 100L);
             when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
-            when(dataQualityService.inspect(upload.path(), "csv")).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
             stubChartSave(20L);
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString())).thenReturn(job(30L, 20L));
@@ -586,7 +587,7 @@ class ChartApplicationServiceImplTest {
         void generateChart_sameFileAndRequest_shouldProduceStableFingerprint() throws Exception {
             CompletedUploadFile upload = completedUpload("a\n1\n", "csv", 4L);
             when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
-            when(dataQualityService.inspect(upload.path(), "csv")).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             List<String> fingerprints = new ArrayList<>();
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenAnswer(invocation -> {
                 fingerprints.add(invocation.getArgument(1));
@@ -613,7 +614,7 @@ class ChartApplicationServiceImplTest {
             }
             CompletedUploadFile upload = completedUpload(csv.toString(), "csv", 200_000L);
             when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
-            when(dataQualityService.inspect(upload.path(), "csv")).thenReturn(report(false));
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
             stubChartSave(20L);
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString())).thenReturn(job(30L, 20L));

@@ -149,8 +149,10 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     public BiResponse generateChart(MultipartFile file, GenChartByAIRequest request, User user) throws Exception {
         validateDataFile(file);
 
-        DataQualityReport qualityReport = dataQualityService.inspect(file);
-        String csv = ExcelUtils.excelToCsv(file);
+        // Parse once and share the rows between the quality check and the CSV for the AI.
+        ExcelUtils.Spreadsheet spreadsheet = ExcelUtils.read(file);
+        DataQualityReport qualityReport = dataQualityService.inspect(spreadsheet);
+        String csv = ExcelUtils.toCsv(spreadsheet.rows());
         String originalFileName = StringUtils.defaultString(file.getOriginalFilename());
         String sourceFileType = FileUtil.getSuffix(originalFileName).toLowerCase(Locale.ROOT);
         return submitAnalysis(
@@ -170,14 +172,12 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         CompletedUploadFile completedUpload = resumableUploadService.resolveCompletedUpload(fileToken, user);
         validateCompletedUploadForAnalysis(completedUpload);
 
-        DataQualityReport qualityReport = dataQualityService.inspect(
+        ExcelUtils.Spreadsheet spreadsheet = ExcelUtils.read(
                 completedUpload.path(),
                 completedUpload.sourceFileType()
         );
-        String csv = ExcelUtils.excelToCsv(
-                completedUpload.path(),
-                completedUpload.sourceFileType()
-        );
+        DataQualityReport qualityReport = dataQualityService.inspect(spreadsheet);
+        String csv = ExcelUtils.toCsv(spreadsheet.rows());
 
         return submitAnalysis(
                 request,
