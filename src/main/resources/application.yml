@@ -21,6 +21,13 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+    # Make publishing verifiable: the broker confirms every message it has taken responsibility for (confirm),
+    # and hands back any message no queue was bound to receive (returns + mandatory) instead of dropping it.
+    # BiMessageProducer waits for both before treating a publish as successful.
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
     listener:
       simple:
         acknowledge-mode: manual
