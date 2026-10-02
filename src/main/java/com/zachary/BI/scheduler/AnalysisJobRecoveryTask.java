@@ -7,12 +7,15 @@ import com.zachary.BI.model.entity.Chart;
 import com.zachary.BI.model.enums.AnalysisJobStatusEnum;
 import com.zachary.BI.service.AnalysisJobService;
 import com.zachary.BI.service.ChartService;
+import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.Date;
 
 /**
@@ -36,6 +39,21 @@ public class AnalysisJobRecoveryTask {
     private BiMessageProducer biMessageProducer;
     @Resource
     private AnalysisRecoveryProperties properties;
+    @Value("${bi.ai.read-timeout:PT3M}")
+    private Duration aiReadTimeout;
+
+    /**
+     * A worker still waiting for the AI provider must never look abandoned; otherwise every slow call would be
+     * reclaimed and paid for twice. Fail at startup rather than in production traffic.
+     */
+    @PostConstruct
+    void validateTimeouts() {
+        if (aiReadTimeout.compareTo(properties.getStaleRunningAfter()) >= 0) {
+            throw new IllegalStateException("bi.ai.read-timeout (" + aiReadTimeout
+                    + ") must be shorter than bi.analysis.recovery.stale-running-after ("
+                    + properties.getStaleRunningAfter() + ")");
+        }
+    }
 
     @Scheduled(initialDelayString = "${bi.analysis.recovery.interval:PT1M}",
             fixedDelayString = "${bi.analysis.recovery.interval:PT1M}")
