@@ -92,6 +92,28 @@ class UserAccountIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void bannedUser_shouldBeRejectedOnEndpointsWithoutAuthCheck() throws Exception {
+        TestUser user = registerAndLogin();
+        jdbcTemplate.update("update user set userRole = 'ban' where id = ?", user.id());
+
+        // Ordinary endpoints have no @AuthCheck, so only getLoginUser can enforce the ban.
+        assertErrorCode(postJson("/chart/my/list/page/vo", user.session(), Map.of()), NO_AUTH_ERROR);
+        assertErrorCode(postJson("/upload/sessions", user.session(),
+                Map.of("fileName", "sales.csv", "totalSize", 10)), NO_AUTH_ERROR);
+    }
+
+    @Test
+    void bannedUser_shouldNotBeAbleToLogIn() throws Exception {
+        TestUser user = registerAndLogin();
+        jdbcTemplate.update("update user set userRole = 'ban' where id = ?", user.id());
+
+        MockHttpSession session = new MockHttpSession();
+        assertErrorCode(postJson("/user/login", session,
+                Map.of("userAccount", user.account(), "userPassword", PASSWORD)), NO_AUTH_ERROR);
+        assertErrorCode(perform(get("/user/get/login").session(session)), NOT_LOGIN_ERROR);
+    }
+
+    @Test
     void admin_shouldManageOtherUsers() throws Exception {
         TestUser admin = registerAndLoginAdmin();
 

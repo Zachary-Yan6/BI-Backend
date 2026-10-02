@@ -8,6 +8,7 @@ import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import com.zachary.BI.common.ErrorCode;
 import com.zachary.BI.constant.CommonConstant;
 import com.zachary.BI.exception.BusinessException;
+import com.zachary.BI.exception.ThrowUtils;
 import com.zachary.BI.mapper.UserMapper;
 import com.zachary.BI.model.dto.user.UserQueryRequest;
 import com.zachary.BI.model.entity.User;
@@ -103,8 +104,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             log.info("user login failed, userAccount cannot match userPassword");
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "User does not exist or password is incorrect");
         }
-        // Implementation note.
-        request.getSession().setAttribute(USER_LOGIN_STATE, user);
+        ThrowUtils.throwIf(isBanned(user), ErrorCode.NO_AUTH_ERROR, "This account has been banned.");
+        // Store only the identity. Role and profile are reloaded from MySQL on every request, so a session can never
+        // act on a stale role, and the password hash is not kept in the session.
+        User sessionUser = new User();
+        sessionUser.setId(user.getId());
+        request.getSession().setAttribute(USER_LOGIN_STATE, sessionUser);
         return this.getLoginUserVO(user);
     }
 
@@ -129,6 +134,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         if (currentUser == null) {
             throw new BusinessException(ErrorCode.NOT_LOGIN_ERROR);
         }
+        // Most endpoints have no @AuthCheck, so this is the one place a ban applies to every signed-in request.
+        ThrowUtils.throwIf(isBanned(currentUser), ErrorCode.NO_AUTH_ERROR, "This account has been banned.");
         return currentUser;
     }
 
@@ -148,7 +155,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
         // Implementation note.
         long userId = currentUser.getId();
-        return this.getById(userId);
+        User user = this.getById(userId);
+        return isBanned(user) ? null : user;
     }
 
     /**
@@ -159,15 +167,17 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
      */
     @Override
     public boolean isAdmin(HttpServletRequest request) {
-        // Implementation note.
-        Object userObj = request.getSession().getAttribute(USER_LOGIN_STATE);
-        User user = (User) userObj;
-        return isAdmin(user);
+        // Read the current role from MySQL; the session object is only an identity and may be arbitrarily old.
+        return isAdmin(getLoginUserPermitNull(request));
     }
 
     @Override
     public boolean isAdmin(User user) {
         return user != null && UserRoleEnum.ADMIN.getValue().equals(user.getUserRole());
+    }
+
+    private static boolean isBanned(User user) {
+        return user != null && UserRoleEnum.BAN.getValue().equals(user.getUserRole());
     }
 
     /**
