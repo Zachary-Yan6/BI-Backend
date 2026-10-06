@@ -191,12 +191,22 @@ class ChartApplicationServiceImplTest {
         }
 
         @Test
-        void getChart_shouldValidateIdAndReturnChart() {
+        void getChart_shouldValidateIdAndReturnOwnChart() {
             Chart chart = chart(8L, USER_ID);
             when(chartService.getById(8L)).thenReturn(chart);
 
-            assertBusinessError(ErrorCode.PARAMS_ERROR, () -> chartApplicationService.getChart(0));
-            assertSame(chart, chartApplicationService.getChart(8L));
+            assertBusinessError(ErrorCode.PARAMS_ERROR, () -> chartApplicationService.getChart(0, user, false));
+            assertSame(chart, chartApplicationService.getChart(8L, user, false));
+        }
+
+        @Test
+        void getChart_shouldHideOtherUsersChartUnlessAdmin() {
+            Chart chart = chart(8L, 999L);
+            when(chartService.getById(8L)).thenReturn(chart);
+
+            // Same error as a missing id, so the caller cannot probe which ids exist.
+            assertBusinessError(ErrorCode.NOT_FOUND_ERROR, () -> chartApplicationService.getChart(8L, user, false));
+            assertSame(chart, chartApplicationService.getChart(8L, user, true));
         }
 
         @Test
@@ -250,19 +260,6 @@ class ChartApplicationServiceImplTest {
             verify(chartService).page(page.capture(), any(QueryWrapper.class));
             assertEquals(3, page.getValue().getCurrent());
             assertEquals(50, page.getValue().getSize());
-        }
-
-        @Test
-        void listPublicCharts_shouldCapPageSize() {
-            ChartQueryRequest request = new ChartQueryRequest();
-            request.setPageSize(21);
-
-            assertBusinessError(ErrorCode.PARAMS_ERROR, () -> chartApplicationService.listPublicCharts(null));
-            assertBusinessError(ErrorCode.PARAMS_ERROR, () -> chartApplicationService.listPublicCharts(request));
-
-            request.setPageSize(20);
-            chartApplicationService.listPublicCharts(request);
-            verify(chartService).page(any(Page.class), any(QueryWrapper.class));
         }
 
         @Test

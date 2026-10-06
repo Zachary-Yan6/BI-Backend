@@ -53,8 +53,9 @@ public class ChartController {
     }
 
     @GetMapping("/get")
-    public BaseResponse<Chart> getChartVOById(long id) {
-        return ResultUtils.success(chartApplicationService.getChart(id));
+    public BaseResponse<Chart> getChartVOById(long id, HttpServletRequest httpRequest) {
+        User user = userService.getLoginUser(httpRequest);
+        return ResultUtils.success(chartApplicationService.getChart(id, user, userService.isAdmin(user)));
     }
 
     @PostMapping("/list/page")
@@ -63,9 +64,16 @@ public class ChartController {
         return ResultUtils.success(chartApplicationService.listCharts(request));
     }
 
+    /**
+     * Charts are private, so this returns only the caller's charts, exactly like /my/list/page/vo.
+     *
+     * @deprecated kept so existing clients keep working; use /my/list/page/vo.
+     */
+    @Deprecated
     @PostMapping("/list/page/vo")
-    public BaseResponse<Page<Chart>> listChartVOByPage(@RequestBody ChartQueryRequest request) {
-        return ResultUtils.success(chartApplicationService.listPublicCharts(request));
+    public BaseResponse<Page<Chart>> listChartVOByPage(@RequestBody ChartQueryRequest request,
+                                                       HttpServletRequest httpRequest) {
+        return listMyChartVOByPage(request, httpRequest);
     }
 
     @PostMapping("/my/list/page/vo")
