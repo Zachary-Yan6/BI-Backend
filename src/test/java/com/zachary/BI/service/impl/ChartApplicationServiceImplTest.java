@@ -535,13 +535,32 @@ class ChartApplicationServiceImplTest {
             stubChartSave(20L);
             when(analysisJobService.create(eq(20L), eq(USER_ID), anyString())).thenReturn(job(30L, 20L));
             doThrow(new IllegalStateException("broker down")).when(biMessageProducer).sendMessage(30L);
+            when(analysisJobService.failQueued(eq(30L), anyString())).thenReturn(true);
 
             assertBusinessError(ErrorCode.SYSTEM_ERROR,
                     () -> chartApplicationService.generateChart(file, validRequest(), user));
 
-            verify(analysisJobService).fail(eq(30L), argThat(reason -> reason.contains("broker down")));
+            verify(analysisJobService).failQueued(eq(30L), argThat(reason -> reason.contains("broker down")));
             verify(chartService).updateById(argThat((Chart chart) ->
                     chart.getId() == 20L && "failed".equals(chart.getStatus())));
+        }
+
+        @Test
+        void generateChart_whenPublishFailureIsAmbiguousButWorkerStarted_shouldKeepJobAndSucceed() throws Exception {
+            MockMultipartFile file = csvFile("a.csv", "a\n1\n");
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
+            when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
+            stubChartSave(20L);
+            when(analysisJobService.create(eq(20L), eq(USER_ID), anyString())).thenReturn(job(30L, 20L));
+            // e.g. the confirm timed out, yet the broker delivered the message and a worker moved the job to running.
+            doThrow(new IllegalStateException("confirm timed out")).when(biMessageProducer).sendMessage(30L);
+            when(analysisJobService.failQueued(eq(30L), anyString())).thenReturn(false);
+
+            BiResponse response = chartApplicationService.generateChart(file, validRequest(), user);
+
+            assertEquals(30L, response.getJobId());
+            verify(analysisJobService, never()).fail(anyLong(), anyString());
+            verify(chartService, never()).updateById(any(Chart.class));
         }
 
         @Test
@@ -714,11 +733,24 @@ class ChartApplicationServiceImplTest {
             when(analysisJobService.retry(1L, USER_ID)).thenReturn(true);
             when(analysisJobService.getForUser(1L, USER_ID)).thenReturn(job(1L, 2L));
             doThrow(new IllegalStateException("broker down")).when(biMessageProducer).sendMessage(1L);
+            when(analysisJobService.failQueued(eq(1L), anyString())).thenReturn(true);
 
             assertBusinessError(ErrorCode.SYSTEM_ERROR, () -> chartApplicationService.retryJob(1L, user));
 
-            verify(analysisJobService).fail(eq(1L), argThat(reason -> reason.contains("broker down")));
+            verify(analysisJobService).failQueued(eq(1L), argThat(reason -> reason.contains("broker down")));
             verify(chartService).updateById(argThat((Chart chart) -> "failed".equals(chart.getStatus())));
+        }
+
+        @Test
+        void retryJob_whenPublishFailureIsAmbiguousButWorkerStarted_shouldReportSuccess() {
+            when(analysisJobService.retry(1L, USER_ID)).thenReturn(true);
+            when(analysisJobService.getForUser(1L, USER_ID)).thenReturn(job(1L, 2L));
+            doThrow(new IllegalStateException("channel closed")).when(biMessageProducer).sendMessage(1L);
+            when(analysisJobService.failQueued(eq(1L), anyString())).thenReturn(false);
+
+            assertTrue(chartApplicationService.retryJob(1L, user));
+
+            verify(chartService, never()).updateById(argThat((Chart chart) -> "failed".equals(chart.getStatus())));
         }
 
         @Test

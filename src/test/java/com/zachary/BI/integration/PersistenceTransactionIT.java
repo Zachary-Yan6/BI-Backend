@@ -81,6 +81,37 @@ class PersistenceTransactionIT extends AbstractIntegrationTest {
         assertThat(eventCount(jobId, "queued")).isEqualTo(2);
     }
 
+    @Test
+    void failQueued_shouldNotTouchAJobAWorkerAlreadyStarted() {
+        long userId = 900_005L;
+        long jobId = analysisJobService.create(insertChart(userId), userId, fingerprint()).getId();
+        // The publish looked failed to the web thread, but the broker delivered it and a worker started the job.
+        analysisJobService.start(jobId);
+
+        assertThat(analysisJobService.failQueued(jobId, "confirm timed out")).isFalse();
+
+        assertThat(jobRow(jobId)).containsEntry("status", "running").containsEntry("failureReason", null);
+        assertThat(eventCount(jobId, "failed")).isZero();
+        // The worker can still complete it.
+        analysisCompletionService.persistSuccess(jobId, jdbcTemplate.queryForObject(
+                "select chartId from analysis_job where id = ?", Long.class, jobId), "{}", "Done");
+        assertThat(jobRow(jobId)).containsEntry("status", "succeeded");
+    }
+
+    @Test
+    void failQueued_shouldFailAJobNoWorkerStarted() {
+        long userId = 900_006L;
+        long jobId = analysisJobService.create(insertChart(userId), userId, fingerprint()).getId();
+
+        assertThat(analysisJobService.failQueued(jobId, "broker down")).isTrue();
+
+        assertThat(jobRow(jobId)).containsEntry("status", "failed").containsEntry("failureReason", "broker down");
+        assertThat(eventCount(jobId, "failed")).isEqualTo(1);
+        // A second attempt finds nothing to change and must not add a contradicting event.
+        analysisJobService.fail(jobId, "again");
+        assertThat(eventCount(jobId, "failed")).isEqualTo(1);
+    }
+
     private long insertChart(long userId) {
         jdbcTemplate.update("insert into chart (userId, name, goal, status) values (?, 'tx', 'goal', 'queued')", userId);
         return jdbcTemplate.queryForObject("select max(id) from chart where userId = ?", Long.class, userId);

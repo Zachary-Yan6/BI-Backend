@@ -167,11 +167,38 @@ class AnalysisJobServiceImplTest {
     }
 
     @Test
-    void fail_shouldUpdateAndRecordEvent() {
+    void fail_shouldUpdateAndRecordEventWithBoundedReason() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(1);
+
         analysisJobService.fail(1L, "x".repeat(2000));
 
         verify(analysisJobMapper).update(isNull(), any());
-        assertEquals("failed", capturedEvent().getStatus());
+        AnalysisJobEvent event = capturedEvent();
+        assertEquals("failed", event.getStatus());
+        assertTrue(event.getMessage().startsWith("Analysis failed: xxx"));
+        assertTrue(event.getMessage().length() <= 512);
+    }
+
+    @Test
+    void fail_whenJobAlreadyFinished_shouldNotRecordContradictingEvent() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(0);
+
+        analysisJobService.fail(1L, "late failure");
+
+        verifyNoInteractions(analysisJobEventMapper);
+    }
+
+    @Test
+    void failQueued_shouldOnlyFailJobsNoWorkerStarted() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(1, 0);
+
+        assertTrue(analysisJobService.failQueued(1L, "Could not submit the job to the queue"));
+        // 0 rows: the job had already left queued, e.g. a worker is running it.
+        assertFalse(analysisJobService.failQueued(1L, "Could not submit the job to the queue"));
+
+        AnalysisJobEvent event = capturedEvent();
+        assertEquals("failed", event.getStatus());
+        assertEquals("Analysis failed: Could not submit the job to the queue", event.getMessage());
     }
 
     @Test
