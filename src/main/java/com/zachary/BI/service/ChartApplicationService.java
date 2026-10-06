@@ -24,9 +24,8 @@ public interface ChartApplicationService {
     long addChart(ChartAddRequest request, User user);
     boolean deleteChart(DeleteRequest request, User user, boolean isAdmin);
     boolean updateChartAsAdmin(ChartUpdateRequest request);
-    Chart getChart(long chartId);
+    Chart getChart(long chartId, User user, boolean isAdmin);
     Page<Chart> listCharts(ChartQueryRequest request);
-    Page<Chart> listPublicCharts(ChartQueryRequest request);
     Page<Chart> listMyCharts(ChartQueryRequest request, User user);
     boolean editChart(ChartEditRequest request, User user, boolean isAdmin);
     BiResponse generateChart(MultipartFile file, GenChartByAIRequest request, User user) throws Exception;

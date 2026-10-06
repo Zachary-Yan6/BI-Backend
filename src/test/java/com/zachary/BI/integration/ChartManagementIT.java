@@ -31,14 +31,45 @@ class ChartManagementIT extends AbstractIntegrationTest {
                 .isEqualTo(owner.id());
 
         assertSuccess(postJson("/chart/edit", owner.session(), Map.of("id", chartId, "name", "Revenue v2")));
-        JsonNode chart = assertSuccess(perform(get("/chart/get").param("id", String.valueOf(chartId))));
+        JsonNode chart = assertSuccess(perform(get("/chart/get").param("id", String.valueOf(chartId))
+                .session(owner.session())));
         assertThat(chart.get("name").asText()).isEqualTo("Revenue v2");
         assertThat(chart.get("goal").asText()).isEqualTo("Show growth");
 
         assertSuccess(postJson("/chart/delete", owner.session(), Map.of("id", chartId)));
         assertThat(jdbcTemplate.queryForObject("select isDelete from chart where id = ?", Integer.class, chartId))
                 .isEqualTo(1);
-        assertErrorCode(perform(get("/chart/get").param("id", String.valueOf(chartId))), 40400);
+        assertErrorCode(perform(get("/chart/get").param("id", String.valueOf(chartId)).session(owner.session())),
+                40400);
+    }
+
+    @Test
+    void getChart_shouldOnlyBeReadableByOwnerOrAdmin() throws Exception {
+        TestUser owner = registerAndLogin();
+        TestUser stranger = registerAndLogin();
+        TestUser admin = registerAndLoginAdmin();
+        long chartId = insertChart(owner.id(), Map.of("name", "Private", "chartData", "salary\n100\n"));
+        String id = String.valueOf(chartId);
+
+        assertErrorCode(perform(get("/chart/get").param("id", id)), 40100);
+        // A stranger gets the same answer as for an id that does not exist.
+        assertErrorCode(perform(get("/chart/get").param("id", id).session(stranger.session())), 40400);
+        assertThat(assertSuccess(perform(get("/chart/get").param("id", id).session(admin.session())))
+                .get("name").asText()).isEqualTo("Private");
+    }
+
+    @Test
+    void deprecatedPublicChartList_shouldRequireLoginAndReturnOnlyOwnCharts() throws Exception {
+        TestUser owner = registerAndLogin();
+        TestUser stranger = registerAndLogin();
+        insertChart(owner.id(), Map.of("name", "Owner's chart"));
+        insertChart(stranger.id(), Map.of("name", "Stranger's chart"));
+
+        assertErrorCode(postJson("/chart/list/page/vo", null, Map.of()), 40100);
+        // Asking for the owner's charts by userId still returns only the stranger's own.
+        JsonNode page = assertSuccess(postJson("/chart/list/page/vo", stranger.session(),
+                Map.of("userId", owner.id(), "pageSize", 20)));
+        assertThat(names(page)).containsExactly("Stranger's chart");
     }
 
     @Test

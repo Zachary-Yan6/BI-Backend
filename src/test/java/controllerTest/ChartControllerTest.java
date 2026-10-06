@@ -189,28 +189,30 @@ public class ChartControllerTest {
     }
 
     @Test
-    void getChartVOById_shouldReturnChart() {
+    void getChartVOById_shouldPassLoggedInUserAndAdminFlag() {
         Chart chart = new Chart();
-        when(chartApplicationService.getChart(9L)).thenReturn(chart);
+        User user = loggedInUser();
+        when(userService.getLoginUser(request)).thenReturn(user);
+        when(userService.isAdmin(user)).thenReturn(false);
+        when(chartApplicationService.getChart(9L, user, false)).thenReturn(chart);
 
-        assertSame(chart, chartController.getChartVOById(9L).getData());
+        assertSame(chart, chartController.getChartVOById(9L, request).getData());
     }
 
     @Test
     void listEndpoints_shouldReturnPagesFromApplicationService() {
         ChartQueryRequest queryRequest = new ChartQueryRequest();
         Page<Chart> adminPage = new Page<>();
-        Page<Chart> publicPage = new Page<>();
         Page<Chart> myPage = new Page<>();
         User user = loggedInUser();
         when(chartApplicationService.listCharts(queryRequest)).thenReturn(adminPage);
-        when(chartApplicationService.listPublicCharts(queryRequest)).thenReturn(publicPage);
         when(userService.getLoginUser(request)).thenReturn(user);
         when(chartApplicationService.listMyCharts(queryRequest, user)).thenReturn(myPage);
 
         assertSame(adminPage, chartController.listChartByPage(queryRequest).getData());
-        assertSame(publicPage, chartController.listChartVOByPage(queryRequest).getData());
         assertSame(myPage, chartController.listMyChartVOByPage(queryRequest, request).getData());
+        // The deprecated "public" listing is now just the caller's own charts.
+        assertSame(myPage, chartController.listChartVOByPage(queryRequest, request).getData());
     }
 
     @Test

@@ -113,20 +113,17 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     }
 
     @Override
-    public Chart getChart(long chartId) {
+    public Chart getChart(long chartId, User user, boolean isAdmin) {
         ThrowUtils.throwIf(chartId <= 0, ErrorCode.PARAMS_ERROR);
-        return requireChart(chartId);
+        Chart chart = requireChart(chartId);
+        // NOT_FOUND rather than NO_AUTH, so a non-owner cannot tell another user's chart from a missing id.
+        ThrowUtils.throwIf(!isAdmin && !chart.getUserId().equals(user.getId()), ErrorCode.NOT_FOUND_ERROR);
+        return chart;
     }
 
     @Override
     public Page<Chart> listCharts(ChartQueryRequest request) {
         ThrowUtils.throwIf(request == null, ErrorCode.PARAMS_ERROR);
-        return chartService.page(new Page<>(request.getCurrent(), request.getPageSize()), queryWrapper(request));
-    }
-
-    @Override
-    public Page<Chart> listPublicCharts(ChartQueryRequest request) {
-        ThrowUtils.throwIf(request == null || request.getPageSize() > MAX_PAGE_SIZE, ErrorCode.PARAMS_ERROR);
         return chartService.page(new Page<>(request.getCurrent(), request.getPageSize()), queryWrapper(request));
     }
 
