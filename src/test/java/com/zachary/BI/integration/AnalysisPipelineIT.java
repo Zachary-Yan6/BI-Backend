@@ -11,6 +11,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
@@ -26,6 +27,7 @@ import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -283,6 +285,35 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
                 .containsEntry("genChart", null);
         assertThat(jdbcTemplate.queryForObject("select retryCount from analysis_job where id = ?", Integer.class,
                 jobId)).isZero();
+    }
+
+    @Test
+    void databaseErrorInConsumer_shouldNotStallConsumers() throws Exception {
+        when(genAi.doChat(anyString())).thenReturn(AI_RESPONSE);
+        listenerRegistry.stop();
+        // One job per consumer thread (concurrency 3); separate users stay within the per-user rate limit.
+        List<Long> poisonedJobs = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            TestUser user = registerAndLogin();
+            poisonedJobs.add(submit(user, uploadFile(user, "sales.csv", CSV), "Database down " + i)
+                    .get("jobId").asLong());
+        }
+        for (long jobId : poisonedJobs) {
+            doThrow(new DataAccessResourceFailureException("Communications link failure"))
+                    .when(analysisJobService).getById(jobId);
+        }
+        listenerRegistry.start();
+
+        // Before the fix each of these left its message unacknowledged, and with prefetch 1 every consumer
+        // stopped receiving messages, so this job was never processed.
+        TestUser user = registerAndLogin();
+        awaitJobStatus(submit(user, uploadFile(user, "sales.csv", CSV), "After the outage").get("jobId").asLong(),
+                "succeeded");
+
+        // The failed deliveries were acknowledged; their jobs wait, still queued, for the recovery task.
+        for (long jobId : poisonedJobs) {
+            assertThat(jobStatus(jobId)).isEqualTo("queued");
+        }
     }
 
     @Test

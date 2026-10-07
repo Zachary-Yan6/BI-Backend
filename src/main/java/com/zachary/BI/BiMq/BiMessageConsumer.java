@@ -42,6 +42,25 @@ public class BiMessageConsumer {
     @RabbitListener(queues = BiMqConstant.BI_QUEUE_NAME, ackMode = "MANUAL")
     public void receiveMessage(String message, Channel channel,
                                @Header(AmqpHeaders.DELIVERY_TAG) long deliveryTag) throws IOException {
+        try {
+            process(message, channel, deliveryTag);
+        } catch (RuntimeException exception) {
+            // With MANUAL ack, Spring neither acks nor nacks when the listener throws. The message would stay
+            // unacknowledged and, with prefetch 1, this consumer would never receive another one until restart:
+            // a short database outage could stop every consumer. Requeueing instead would spin while the database
+            // is down, so acknowledge and leave the job, still queued, running or retrying, to
+            // AnalysisJobRecoveryTask, which republishes it once it goes stale.
+            log.error("Unexpected failure while processing analysis message {}; leaving the job to the recovery task",
+                    message, exception);
+            channel.basicAck(deliveryTag, false);
+        }
+    }
+
+    /**
+     * Every path acknowledges the message exactly once as its last step, so receiveMessage can safely
+     * acknowledge when this throws.
+     */
+    private void process(String message, Channel channel, long deliveryTag) throws IOException {
         long jobId;
         try {
             jobId = Long.parseLong(message);
