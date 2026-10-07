@@ -27,6 +27,14 @@ public interface AnalysisJobService {
 
     void fail(long jobId, String reason);
 
+    /**
+     * Fails a job only while it is still queued, i.e. no worker has started it.
+     * Used when publishing its message reported a failure that may not be real (see BiMessageProducer).
+     *
+     * @return false when the job had already left queued, normally because the message was delivered after all
+     */
+    boolean failQueued(long jobId, String reason);
+
     boolean cancel(long jobId, long userId);
 
     /**

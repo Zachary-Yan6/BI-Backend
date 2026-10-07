@@ -227,9 +227,12 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         try {
             biMessageProducer.sendMessage(jobId);
         } catch (RuntimeException exception) {
-            analysisJobService.fail(jobId, "Could not submit retry to the queue: " + exception.getMessage());
-            updateChartStatus(job.getChartId(), AnalysisJobStatusEnum.FAILED.getValue(), "Could not submit retry to the queue.");
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Unable to queue the retry");
+            // Same ambiguity as in submitAnalysis: fail the job only while no worker has started it.
+            if (analysisJobService.failQueued(jobId, "Could not submit retry to the queue: " + exception.getMessage())) {
+                updateChartStatus(job.getChartId(), AnalysisJobStatusEnum.FAILED.getValue(), "Could not submit retry to the queue.");
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Unable to queue the retry");
+            }
+            log.warn("Publishing retry of job {} reported a failure, but a worker already started it", jobId, exception);
         }
         return true;
     }
@@ -312,9 +315,13 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         try {
             biMessageProducer.sendMessage(job.getId());
         } catch (RuntimeException exception) {
-            analysisJobService.fail(job.getId(), "Could not submit the job to the queue: " + exception.getMessage());
-            updateChartStatus(chart.getId(), AnalysisJobStatusEnum.FAILED.getValue(), "Could not submit the job to the queue.");
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Unable to queue the analysis job");
+            // A confirm timeout, or the nack Spring generates locally when the channel closes, does not prove the
+            // broker lacks the message: a worker may already be running the job. Fail it only while still queued.
+            if (analysisJobService.failQueued(job.getId(), "Could not submit the job to the queue: " + exception.getMessage())) {
+                updateChartStatus(chart.getId(), AnalysisJobStatusEnum.FAILED.getValue(), "Could not submit the job to the queue.");
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Unable to queue the analysis job");
+            }
+            log.warn("Publishing job {} reported a failure, but a worker already started it", job.getId(), exception);
         }
 
         log.info("Queued analysis job={}, chart={}", job.getId(), chart.getId());

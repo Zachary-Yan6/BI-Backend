@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import jakarta.annotation.Resource;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -28,6 +29,8 @@ import java.util.UUID;
 @Slf4j
 public class AnalysisJobServiceImpl implements AnalysisJobService {
     private static final int DEFAULT_MAX_RETRIES = 3;
+    /** analysis_job_event.message is varchar(512). */
+    private static final int MAX_EVENT_MESSAGE_LENGTH = 512;
 
     @Resource
     private AnalysisJobMapper analysisJobMapper;
@@ -125,15 +128,29 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void fail(long jobId, String reason) {
-        Date now = new Date();
-        analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
+        failFrom(jobId, reason, AnalysisJobStatusEnum.RUNNING, AnalysisJobStatusEnum.RETRYING, AnalysisJobStatusEnum.QUEUED);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean failQueued(long jobId, String reason) {
+        return failFrom(jobId, reason, AnalysisJobStatusEnum.QUEUED);
+    }
+
+    private boolean failFrom(long jobId, String reason, AnalysisJobStatusEnum... fromStatuses) {
+        int changed = analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getId, jobId)
-                .in(AnalysisJob::getStatus, AnalysisJobStatusEnum.RUNNING.getValue(), AnalysisJobStatusEnum.RETRYING.getValue(), AnalysisJobStatusEnum.QUEUED.getValue())
+                .in(AnalysisJob::getStatus, Arrays.stream(fromStatuses).map(AnalysisJobStatusEnum::getValue).toList())
                 .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.FAILED.getValue())
                 .set(AnalysisJob::getActiveFingerprint, null)
                 .set(AnalysisJob::getFailureReason, truncate(reason))
-                .set(AnalysisJob::getFinishedAt, now));
-        addEvent(jobId, AnalysisJobStatusEnum.FAILED.getValue(), "Analysis failed after all available attempts.");
+                .set(AnalysisJob::getFinishedAt, new Date()));
+        // A job that already finished keeps its history: recording a failure it never had would contradict it.
+        if (changed > 0) {
+            addEvent(jobId, AnalysisJobStatusEnum.FAILED.getValue(),
+                    StringUtils.abbreviate("Analysis failed: " + truncate(reason), MAX_EVENT_MESSAGE_LENGTH));
+        }
+        return changed > 0;
     }
 
     @Override
