@@ -1,10 +1,12 @@
 package com.zachary.BI.service.impl;
 
 import com.zachary.BI.common.ErrorCode;
+import com.zachary.BI.config.AnalysisLimitProperties;
 import com.zachary.BI.config.AnalysisRetryProperties;
 import com.zachary.BI.exception.BusinessException;
 import com.zachary.BI.mapper.AnalysisJobEventMapper;
 import com.zachary.BI.mapper.AnalysisJobMapper;
+import com.zachary.BI.mapper.UserMapper;
 import com.zachary.BI.model.entity.AnalysisJob;
 import com.zachary.BI.model.entity.AnalysisJobEvent;
 import com.zachary.BI.model.entity.Chart;
@@ -16,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.api.function.Executable;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -24,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.Date;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -34,7 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -50,6 +56,12 @@ class AnalysisJobServiceImplTest {
 
     @Mock
     private ChartService chartService;
+
+    @Mock
+    private UserMapper userMapper;
+
+    @Spy
+    private AnalysisLimitProperties limitProperties = new AnalysisLimitProperties();
 
     @Spy
     private AnalysisRetryProperties retryProperties = new AnalysisRetryProperties();
@@ -215,6 +227,38 @@ class AnalysisJobServiceImplTest {
         assertFalse(analysisJobService.failRunning(1L, "Not retryable: 401 Unauthorized"));
 
         assertEquals("Analysis failed: Not retryable: 401 Unauthorized", capturedEvent().getMessage());
+    }
+
+    @Test
+    void checkCapacity_shouldLockTheUserBeforeCountingAndAllowUnderBothLimits() {
+        when(analysisJobMapper.selectCount(any())).thenReturn(4L, 199L);
+
+        assertDoesNotThrow(() -> analysisJobService.checkCapacity(7L));
+
+        // The lock must come first, or a concurrent submission by the same user could count the same 4 jobs.
+        InOrder order = inOrder(userMapper, analysisJobMapper);
+        order.verify(userMapper).lockById(7L);
+        order.verify(analysisJobMapper, times(2)).selectCount(any());
+    }
+
+    @Test
+    void checkCapacity_whenTheUserHasFiveActiveJobs_shouldReject() {
+        when(analysisJobMapper.selectCount(any())).thenReturn(5L);
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> analysisJobService.checkCapacity(7L));
+
+        assertEquals(ErrorCode.TOO_MANY_REQUESTS.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("5 analyses in progress"), exception.getMessage());
+    }
+
+    @Test
+    void checkCapacity_whenTheSystemIsFull_shouldReject() {
+        when(analysisJobMapper.selectCount(any())).thenReturn(0L, 200L);
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> analysisJobService.checkCapacity(7L));
+
+        assertEquals(ErrorCode.TOO_MANY_REQUESTS.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("at capacity"), exception.getMessage());
     }
 
     @Test

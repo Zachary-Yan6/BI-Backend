@@ -1,6 +1,7 @@
 package com.zachary.BI.scheduler;
 
 import com.zachary.BI.BiMq.BiMessageProducer;
+import com.zachary.BI.BiMq.BiMqConstant;
 import com.zachary.BI.BiMq.RetryDelayPolicy;
 import com.zachary.BI.config.AnalysisRecoveryProperties;
 import com.zachary.BI.model.entity.AnalysisJob;
@@ -11,6 +12,8 @@ import com.zachary.BI.service.ChartService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.AmqpAdmin;
+import org.springframework.amqp.core.QueueInformation;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -42,6 +45,8 @@ public class AnalysisJobRecoveryTask {
     private AnalysisRecoveryProperties properties;
     @Resource
     private RetryDelayPolicy retryDelayPolicy;
+    @Resource
+    private AmqpAdmin amqpAdmin;
     @Value("${bi.ai.read-timeout:PT3M}")
     private Duration aiReadTimeout;
 
@@ -96,6 +101,13 @@ public class AnalysisJobRecoveryTask {
     }
 
     void republishStalePendingJobs() {
+        // "Untouched for stale-pending-after" also describes a job whose message is simply still waiting behind a
+        // long backlog; republishing those added a duplicate message per job every interval, growing the backlog.
+        // While the analysis queue still holds messages, a lost one cannot be told apart, so wait until it drains:
+        // then any job still queued or retrying has no message left to wait for.
+        if (analysisQueueHasBacklog()) {
+            return;
+        }
         long idleSeconds = properties.getStalePendingAfter().toSeconds();
         for (AnalysisJob job : analysisJobService.listStalePending(idleSeconds, properties.getBatchSize())) {
             try {
@@ -107,6 +119,22 @@ public class AnalysisJobRecoveryTask {
             } catch (RuntimeException exception) {
                 log.error("Could not republish stale analysis job {}", job.getId(), exception);
             }
+        }
+    }
+
+    private boolean analysisQueueHasBacklog() {
+        try {
+            QueueInformation queue = amqpAdmin.getQueueInfo(BiMqConstant.BI_QUEUE_NAME);
+            if (queue != null && queue.getMessageCount() > 0) {
+                log.info("Analysis queue has {} waiting messages; not republishing stale pending jobs yet",
+                        queue.getMessageCount());
+                return true;
+            }
+            return false;
+        } catch (RuntimeException exception) {
+            // Without the broker a republish would fail anyway; try again next run.
+            log.warn("Could not read the analysis queue depth; skipping republishing this run", exception);
+            return true;
         }
     }
 

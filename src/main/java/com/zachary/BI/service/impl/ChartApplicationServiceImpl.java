@@ -177,6 +177,15 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     public BiResponse generateChart(String fileToken, GenChartByAIRequest request, User user) throws Exception {
         CompletedUploadFile completedUpload = resumableUploadService.resolveCompletedUpload(fileToken, user);
         validateCompletedUploadForAnalysis(completedUpload);
+        validateGenerationRequest(request);
+
+        // The upload's SHA-256 identifies its content, so a repeated submission is answered without parsing the file
+        // again. A multipart upload has no such hash and is identified by its parsed CSV instead.
+        Optional<AnalysisJob> activeJob = analysisJobService.findActiveJob(user.getId(),
+                fingerprint(user, request, completedUpload.wholeFileSha256()));
+        if (activeJob.isPresent()) {
+            return reusedResponse(activeJob.get());
+        }
 
         ParsedData parsed = parseForAnalysis(user,
                 () -> ExcelUtils.read(completedUpload.path(), completedUpload.sourceFileType()));
@@ -302,13 +311,7 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
                 "Review the data quality report and confirm before starting analysis."
         );
 
-        String fingerprint = fingerprint(
-                user.getId(),
-                request.getName(),
-                request.getGoal(),
-                request.getChartType(),
-                sourceIdentity
-        );
+        String fingerprint = fingerprint(user, request, sourceIdentity);
         Optional<AnalysisJob> activeJob = analysisJobService.findActiveJob(user.getId(), fingerprint);
         if (activeJob.isPresent()) {
             return reusedResponse(activeJob.get());
@@ -371,9 +374,11 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
      * TransactionTemplate rather than @Transactional: this is called from inside the class, and such self-calls
      * bypass the Spring proxy that applies @Transactional.
      * The message is published by the caller only after this commits, so the consumer can always see the job.
+     * The capacity check runs first in the same transaction, so its lock on the user lasts until the job exists.
      */
     private AnalysisJob createChartAndJob(Chart chart, long userId, String fingerprint) {
         return transactionTemplate.execute(status -> {
+            analysisJobService.checkCapacity(userId);
             ThrowUtils.throwIf(!chartService.save(chart), ErrorCode.SYSTEM_ERROR, "Failed to save data");
             return analysisJobService.create(chart.getId(), userId, fingerprint);
         });
@@ -617,10 +622,11 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         return response;
     }
 
-    private String fingerprint(long userId, String name, String goal, String chartType, String csv) {
+    private String fingerprint(User user, GenChartByAIRequest request, String sourceIdentity) {
         try {
-            byte[] bytes = MessageDigest.getInstance("SHA-256").digest((userId + "\u0000" + name + "\u0000" + goal
-                    + "\u0000" + StringUtils.defaultString(chartType) + "\u0000" + csv).getBytes(StandardCharsets.UTF_8));
+            byte[] bytes = MessageDigest.getInstance("SHA-256").digest((user.getId() + "\u0000" + request.getName()
+                    + "\u0000" + request.getGoal() + "\u0000" + StringUtils.defaultString(request.getChartType())
+                    + "\u0000" + sourceIdentity).getBytes(StandardCharsets.UTF_8));
             StringBuilder result = new StringBuilder(bytes.length * 2);
             for (byte value : bytes) {
                 result.append(String.format("%02x", value));

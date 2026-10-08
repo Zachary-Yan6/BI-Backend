@@ -13,6 +13,15 @@ public interface AnalysisJobService {
 
     AnalysisJob create(long chartId, long userId, String fingerprint);
 
+    /**
+     * Rejects a new job when the user, or the whole system, already has the maximum number of active jobs.
+     * Must run inside the transaction that then creates the job: it locks the user's row until that transaction
+     * ends, so two concurrent submissions by one user cannot both see a free slot.
+     *
+     * @throws com.zachary.BI.exception.BusinessException TOO_MANY_REQUESTS when a limit is reached
+     */
+    void checkCapacity(long userId);
+
     boolean start(long jobId);
 
     void succeed(long jobId);
