@@ -1,6 +1,7 @@
 package com.zachary.BI;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zachary.BI.exception.NonRetryableAiException;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -86,7 +87,8 @@ class GenAiTest {
         GenAi genAi = new GenAi(RestClient.builder(), new ObjectMapper(), "http://127.0.0.1:1", "", "model",
                 Duration.ofSeconds(1), READ_TIMEOUT);
 
-        IllegalStateException exception = assertThrows(IllegalStateException.class, () -> genAi.doChat("hello"));
+        // Not retryable: the key will not appear between attempts.
+        NonRetryableAiException exception = assertThrows(NonRetryableAiException.class, () -> genAi.doChat("hello"));
         assertTrue(exception.getMessage().contains("DEEPSEEK_API_KEY"));
     }
 

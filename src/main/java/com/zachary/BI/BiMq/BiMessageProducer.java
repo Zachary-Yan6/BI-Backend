@@ -39,8 +39,12 @@ public class BiMessageProducer {
         publish(BiMqConstant.BI_EXCHANGE_NAME, BiMqConstant.BI_ROUTING_KEY, jobId, null);
     }
 
-    public void scheduleRetry(long jobId, long delayMillis) {
-        publish(BiMqConstant.RETRY_EXCHANGE_NAME, BiMqConstant.RETRY_ROUTING_KEY, jobId, message -> {
+    /**
+     * @param tier the retry queue from {@link RetryDelayPolicy.RetryPlan#tier()}; it must hold delays of about this
+     *             length, because RabbitMQ only expires the message at the head of a queue
+     */
+    public void scheduleRetry(long jobId, int tier, long delayMillis) {
+        publish(BiMqConstant.RETRY_EXCHANGE_NAME, BiMqConstant.RETRY_ROUTING_KEY_PREFIX + tier, jobId, message -> {
             message.getMessageProperties().setExpiration(String.valueOf(delayMillis));
             return message;
         });

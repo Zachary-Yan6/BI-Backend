@@ -12,6 +12,10 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.amqp.rabbit.listener.RabbitListenerEndpointRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.mock.web.MockMultipartFile;
 
 import java.nio.charset.StandardCharsets;
@@ -41,7 +45,7 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
     private static final byte[] CSV = "month,sales\nJan,10\nFeb,12\nMar,15\n".getBytes(StandardCharsets.UTF_8);
     private static final String AI_RESPONSE =
             "```javascript\n{\"xAxis\":{\"data\":[\"Jan\",\"Feb\",\"Mar\"]}}\n```\n-----\nSales grow every month.";
-    /** Covers the 2s retry-queue TTL plus broker and consumer latency. */
+    /** Covers the test retry delays (1s, 2s, 3s, plus jitter) and broker and consumer latency. */
     private static final Duration PIPELINE_TIMEOUT = Duration.ofSeconds(30);
 
     @Autowired
@@ -129,6 +133,45 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
         assertThat(job.get("failureReason")).as("cleared on success").isNull();
         // Events are ordered by createTime and then id, so the timeline is exact even within one second.
         assertThat(eventStatuses(user, jobId)).containsExactly("queued", "running", "retrying", "running", "succeeded");
+    }
+
+    @Test
+    void providerOverloaded_shouldBeRetriedThroughEachDelayTierUntilItRecovers() throws Exception {
+        HttpServerErrorException overloaded = HttpServerErrorException.create(HttpStatus.SERVICE_UNAVAILABLE,
+                "Service Unavailable", new HttpHeaders(), new byte[0], null);
+        when(genAi.doChat(anyString())).thenThrow(overloaded).thenThrow(overloaded).thenReturn(AI_RESPONSE);
+        TestUser user = registerAndLogin();
+        long jobId = submit(user, uploadFile(user, "sales.csv", CSV), "Overloaded").get("jobId").asLong();
+
+        awaitJobStatus(jobId, "succeeded");
+
+        assertThat(jdbcTemplate.queryForObject("select retryCount from analysis_job where id = ?", Integer.class,
+                jobId)).isEqualTo(2);
+        assertThat(eventStatuses(user, jobId)).containsExactly(
+                "queued", "running", "retrying", "running", "retrying", "running", "succeeded");
+        // One retry queue per configured delay.
+        for (int tier = 1; tier <= 3; tier++) {
+            assertThat(amqpAdmin.getQueueProperties(BiMqConstant.RETRY_QUEUE_NAME_PREFIX + tier)).isNotNull();
+        }
+    }
+
+    @Test
+    void requestTheProviderRejected_shouldFailAtOnceWithoutRetrying() throws Exception {
+        when(genAi.doChat(anyString())).thenThrow(HttpClientErrorException.create(HttpStatus.UNAUTHORIZED,
+                "Unauthorized", new HttpHeaders(), new byte[0], null));
+        TestUser user = registerAndLogin();
+        JsonNode submitted = submit(user, uploadFile(user, "sales.csv", CSV), "Bad key");
+        long jobId = submitted.get("jobId").asLong();
+
+        awaitJobStatus(jobId, "failed");
+
+        verify(genAi, times(1)).doChat(anyString());
+        assertThat(jdbcTemplate.queryForObject("select retryCount from analysis_job where id = ?", Integer.class,
+                jobId)).isZero();
+        assertThat(jdbcTemplate.queryForObject("select execMessage from chart where id = ?", String.class,
+                submitted.get("chartId").asLong())).startsWith("Not retryable: 401");
+        assertThat(eventStatuses(user, jobId)).containsExactly("queued", "running", "failed");
+        assertThat(drainDeadLetterQueueUntil(String.valueOf(jobId))).isTrue();
     }
 
     @Test

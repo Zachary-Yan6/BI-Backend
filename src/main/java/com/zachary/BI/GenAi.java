@@ -2,6 +2,7 @@ package com.zachary.BI;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zachary.BI.exception.NonRetryableAiException;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
@@ -43,7 +44,7 @@ public class GenAi {
 
     public String doChat(String message) {
         if (StringUtils.isBlank(apiKey)) {
-            throw new IllegalStateException("DEEPSEEK_API_KEY is not configured");
+            throw new NonRetryableAiException("DEEPSEEK_API_KEY is not configured");
         }
 
         ChatRequest request = new ChatRequest(

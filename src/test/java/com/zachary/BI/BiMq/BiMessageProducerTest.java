@@ -72,15 +72,15 @@ class BiMessageProducerTest {
     }
 
     @Test
-    void scheduleRetry_shouldSetTtlAndWaitForConfirm() {
+    void scheduleRetry_shouldRouteToTierQueueWithTtlAndWaitForConfirm() {
         ArgumentCaptor<MessagePostProcessor> postProcessor = ArgumentCaptor.forClass(MessagePostProcessor.class);
         doAnswer(invocation -> {
             invocation.<CorrelationData>getArgument(4).getFuture().complete(new CorrelationData.Confirm(true, null));
             return null;
         }).when(rabbitTemplate).convertAndSend(eq(BiMqConstant.RETRY_EXCHANGE_NAME),
-                eq(BiMqConstant.RETRY_ROUTING_KEY), eq((Object) "7"), postProcessor.capture(), any(CorrelationData.class));
+                eq("bi.analysis.retry.2"), eq((Object) "7"), postProcessor.capture(), any(CorrelationData.class));
 
-        producer.scheduleRetry(7L, 4_000L);
+        producer.scheduleRetry(7L, 2, 4_000L);
 
         Message message = postProcessor.getValue().postProcessMessage(new Message(new byte[0], new MessageProperties()));
         assertEquals("4000", message.getMessageProperties().getExpiration());

@@ -91,6 +91,12 @@ bi:
     read-timeout: PT3M
 
   analysis:
+    retry:
+      # Wait before each retry of a failed analysis (one retry per entry, strictly increasing), plus up to
+      # jitter x delay at random. 400/401/402/403/404/413/422 from the provider are not retried at all.
+      # The longest delay x (1 + jitter) must stay below recovery.stale-pending-after (checked at startup).
+      delays: [PT30S, PT2M, PT5M]
+      jitter: 0.2
     recovery:
       # Scheduled safety net for jobs stuck in running/queued/retrying (see AnalysisJobRecoveryTask).
       enabled: true

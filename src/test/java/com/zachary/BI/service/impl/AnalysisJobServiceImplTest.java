@@ -1,6 +1,7 @@
 package com.zachary.BI.service.impl;
 
 import com.zachary.BI.common.ErrorCode;
+import com.zachary.BI.config.AnalysisRetryProperties;
 import com.zachary.BI.exception.BusinessException;
 import com.zachary.BI.mapper.AnalysisJobEventMapper;
 import com.zachary.BI.mapper.AnalysisJobMapper;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.function.Executable;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Date;
@@ -48,6 +50,9 @@ class AnalysisJobServiceImplTest {
 
     @Mock
     private ChartService chartService;
+
+    @Spy
+    private AnalysisRetryProperties retryProperties = new AnalysisRetryProperties();
 
     @InjectMocks
     private AnalysisJobServiceImpl analysisJobService;
@@ -199,6 +204,17 @@ class AnalysisJobServiceImplTest {
         AnalysisJobEvent event = capturedEvent();
         assertEquals("failed", event.getStatus());
         assertEquals("Analysis failed: Could not submit the job to the queue", event.getMessage());
+    }
+
+    @Test
+    void failRunning_shouldOnlyFailJobsAWorkerIsRunning() {
+        when(analysisJobMapper.update(isNull(), any())).thenReturn(1, 0);
+
+        assertTrue(analysisJobService.failRunning(1L, "Not retryable: 401 Unauthorized"));
+        // 0 rows: the recovery task already reclaimed the job, so its decision stands.
+        assertFalse(analysisJobService.failRunning(1L, "Not retryable: 401 Unauthorized"));
+
+        assertEquals("Analysis failed: Not retryable: 401 Unauthorized", capturedEvent().getMessage());
     }
 
     @Test
