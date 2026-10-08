@@ -613,6 +613,38 @@ class ChartApplicationServiceImplTest {
         Path tempDir;
 
         @Test
+        void generateChart_whenTheSameAnalysisIsActive_shouldReuseItWithoutParsingTheFile() throws Exception {
+            CompletedUploadFile upload = completedUpload("a\n1\n", "csv", 4L);
+            when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
+            when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.of(job(30L, 20L)));
+
+            BiResponse response = chartApplicationService.generateChart("token", validRequest(), user);
+
+            assertTrue(response.isReused());
+            assertEquals(30L, response.getJobId());
+            // The upload's hash identifies it, so a repeated click costs one lookup instead of a full parse.
+            verify(parsingLimiter, never()).parse(anyLong(), any());
+            verifyNoInteractions(dataQualityService, chartService);
+        }
+
+        @Test
+        void generateChart_whenOverTheActiveJobLimit_shouldRejectBeforeSavingOrQueueing() throws Exception {
+            CompletedUploadFile upload = completedUpload("a\n1\n", "csv", 4L);
+            when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
+            when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenReturn(Optional.empty());
+            doThrow(new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "You already have 5 analyses in progress."))
+                    .when(analysisJobService).checkCapacity(USER_ID);
+
+            assertBusinessError(ErrorCode.TOO_MANY_REQUESTS,
+                    () -> chartApplicationService.generateChart("token", validRequest(), user));
+
+            verify(chartService, never()).save(any(Chart.class));
+            verify(analysisJobService, never()).create(anyLong(), anyLong(), anyString());
+            verifyNoInteractions(biMessageProducer);
+        }
+
+        @Test
         void generateChart_shouldUseCompletedUploadAndItsHashAsIdentity() throws Exception {
             CompletedUploadFile upload = completedUpload("month,sales\nJan,10\n", "csv", 100L);
             when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
@@ -634,7 +666,7 @@ class ChartApplicationServiceImplTest {
         void generateChart_sameFileAndRequest_shouldProduceStableFingerprint() throws Exception {
             CompletedUploadFile upload = completedUpload("a\n1\n", "csv", 4L);
             when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
-            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report(false));
+            // Every call finds an active job, so each one is answered before the file is parsed.
             List<String> fingerprints = new ArrayList<>();
             when(analysisJobService.findActiveJob(eq(USER_ID), anyString())).thenAnswer(invocation -> {
                 fingerprints.add(invocation.getArgument(1));

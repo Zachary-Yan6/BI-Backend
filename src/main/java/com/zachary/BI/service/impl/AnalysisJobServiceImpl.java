@@ -3,6 +3,7 @@ package com.zachary.BI.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.zachary.BI.common.ErrorCode;
+import com.zachary.BI.config.AnalysisLimitProperties;
 import com.zachary.BI.config.AnalysisRetryProperties;
 import com.zachary.BI.exception.ThrowUtils;
 import com.zachary.BI.model.entity.AnalysisJob;
@@ -11,6 +12,7 @@ import com.zachary.BI.model.entity.Chart;
 import com.zachary.BI.model.enums.AnalysisJobStatusEnum;
 import com.zachary.BI.mapper.AnalysisJobEventMapper;
 import com.zachary.BI.mapper.AnalysisJobMapper;
+import com.zachary.BI.mapper.UserMapper;
 import com.zachary.BI.service.AnalysisJobService;
 import com.zachary.BI.service.ChartService;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +42,10 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
     private ChartService chartService;
     @Resource
     private AnalysisRetryProperties retryProperties;
+    @Resource
+    private AnalysisLimitProperties limitProperties;
+    @Resource
+    private UserMapper userMapper;
 
     @Override
     public Optional<AnalysisJob> findActiveJob(long userId, String fingerprint) {
@@ -65,6 +71,24 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         analysisJobMapper.insert(job);
         addEvent(job.getId(), job.getStatus(), "Analysis request accepted and queued.");
         return job;
+    }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void checkCapacity(long userId) {
+        // Held until the job insert commits; a concurrent submission by the same user waits here and then counts it.
+        userMapper.lockById(userId);
+        long userActive = countActive(new LambdaQueryWrapper<AnalysisJob>().eq(AnalysisJob::getUserId, userId));
+        ThrowUtils.throwIf(userActive >= limitProperties.getMaxActiveJobsPerUser(), ErrorCode.TOO_MANY_REQUESTS,
+                "You already have " + userActive + " analyses in progress. Wait for one to finish or cancel one.");
+        long allActive = countActive(new LambdaQueryWrapper<>());
+        ThrowUtils.throwIf(allActive >= limitProperties.getMaxActiveJobs(), ErrorCode.TOO_MANY_REQUESTS,
+                "The analysis service is at capacity. Please try again later.");
+    }
+
+    private long countActive(LambdaQueryWrapper<AnalysisJob> query) {
+        return analysisJobMapper.selectCount(query.in(AnalysisJob::getStatus, AnalysisJobStatusEnum.QUEUED.getValue(),
+                AnalysisJobStatusEnum.RUNNING.getValue(), AnalysisJobStatusEnum.RETRYING.getValue()));
     }
 
     @Override

@@ -91,6 +91,11 @@ bi:
     read-timeout: PT3M
 
   analysis:
+    limits:
+      # Analyses queued, running or retrying at once (each is a paid AI call and a slot in the shared queue).
+      # Over either limit, submitting returns 42900. An identical submission still reuses its active job.
+      max-active-jobs-per-user: 5
+      max-active-jobs: 200
     parsing:
       # Spreadsheets parsed at once on this instance (each holds up to ~50 MB of heap); each user gets one at a time.
       # A request waits this long for a free slot, then gets 42900 "server is busy".
