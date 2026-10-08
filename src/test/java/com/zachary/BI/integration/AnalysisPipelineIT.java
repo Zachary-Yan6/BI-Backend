@@ -302,6 +302,39 @@ class AnalysisPipelineIT extends AbstractIntegrationTest {
     }
 
     @Test
+    void chartBeingAnalysed_shouldShowAsRunningAndBeFoundByTheAnalyzingFilter() throws Exception {
+        CountDownLatch aiCallStarted = new CountDownLatch(1);
+        CountDownLatch releaseAiCall = new CountDownLatch(1);
+        when(genAi.doChat(anyString())).thenAnswer(invocation -> {
+            aiCallStarted.countDown();
+            releaseAiCall.await(PIPELINE_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+            return AI_RESPONSE;
+        });
+        TestUser user = registerAndLogin();
+        JsonNode submitted = submit(user, uploadFile(user, "sales.csv", CSV), "In progress");
+        long chartId = submitted.get("chartId").asLong();
+
+        try {
+            assertThat(aiCallStarted.await(PIPELINE_TIMEOUT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+
+            // Previously the chart stayed "queued" during the AI call, so this filter never found new work.
+            assertThat(jdbcTemplate.queryForObject("select status from chart where id = ?", String.class, chartId))
+                    .isEqualTo("running");
+            JsonNode analyzing = assertSuccess(postJson("/chart/my/list/page/vo", user.session(),
+                    Map.of("statuses", List.of("analyzing"), "pageSize", 20)));
+            List<Long> ids = new ArrayList<>();
+            analyzing.get("records").forEach(chart -> ids.add(chart.get("id").asLong()));
+            assertThat(ids).containsExactly(chartId);
+        } finally {
+            releaseAiCall.countDown();
+        }
+
+        awaitJobStatus(submitted.get("jobId").asLong(), "succeeded");
+        assertThat(jdbcTemplate.queryForObject("select status from chart where id = ?", String.class, chartId))
+                .isEqualTo("succeeded");
+    }
+
+    @Test
     void deletingChartWhileAiCallIsRunning_shouldDiscardResultWithoutRetrying() throws Exception {
         CountDownLatch aiCallStarted = new CountDownLatch(1);
         CountDownLatch releaseAiCall = new CountDownLatch(1);

@@ -68,17 +68,30 @@ class PersistenceTransactionIT extends AbstractIntegrationTest {
     }
 
     @Test
-    void requeueAfterPersistenceFailure_shouldReturnJobAndChartToQueue() {
+    void chartStatus_shouldFollowEveryJobTransition() {
         long userId = 900_004L;
         long chartId = insertChart(userId);
         long jobId = analysisJobService.create(chartId, userId, fingerprint()).getId();
+
         analysisJobService.start(jobId);
+        // Previously the chart stayed "queued" while the worker ran.
+        assertThat(chartStatus(chartId)).containsEntry("status", "running");
 
-        analysisJobService.requeueAfterPersistenceFailure(jobId, "Deadlock found");
+        analysisJobService.scheduleRetry(jobId, "AI provider timeout");
+        assertThat(chartStatus(chartId)).containsEntry("status", "retrying")
+                .containsEntry("execMessage", "AI provider timeout");
 
-        assertThat(jobRow(jobId)).containsEntry("status", "queued").containsEntry("failureReason", "Deadlock found");
-        assertThat(chartRow(chartId)).containsEntry("status", "queued");
-        assertThat(eventCount(jobId, "queued")).isEqualTo(2);
+        analysisJobService.start(jobId);
+        analysisJobService.failRunning(jobId, "Not retryable: 401");
+        assertThat(chartStatus(chartId)).containsEntry("status", "failed")
+                .containsEntry("execMessage", "Not retryable: 401");
+
+        assertThat(analysisJobService.retry(jobId, userId)).isTrue();
+        assertThat(chartStatus(chartId)).containsEntry("status", "queued").containsEntry("execMessage", null);
+
+        assertThat(analysisJobService.cancel(jobId, userId)).isTrue();
+        assertThat(chartStatus(chartId)).containsEntry("status", "cancelled");
+        assertThat(jobRow(jobId)).containsEntry("status", "cancelled");
     }
 
     @Test
@@ -119,6 +132,10 @@ class PersistenceTransactionIT extends AbstractIntegrationTest {
 
     private Map<String, Object> chartRow(long chartId) {
         return jdbcTemplate.queryForMap("select status, genResult, generatedAt from chart where id = ?", chartId);
+    }
+
+    private Map<String, Object> chartStatus(long chartId) {
+        return jdbcTemplate.queryForMap("select status, execMessage from chart where id = ?", chartId);
     }
 
     private Map<String, Object> jobRow(long jobId) {

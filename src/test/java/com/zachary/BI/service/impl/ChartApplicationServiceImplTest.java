@@ -543,8 +543,8 @@ class ChartApplicationServiceImplTest {
                     () -> chartApplicationService.generateChart(file, validRequest(), user));
 
             verify(analysisJobService).failQueued(eq(30L), argThat(reason -> reason.contains("broker down")));
-            verify(chartService).updateById(argThat((Chart chart) ->
-                    chart.getId() == 20L && "failed".equals(chart.getStatus())));
+            // failQueued moves the chart to failed in its own transaction; this class no longer writes chart status.
+            verify(chartService, never()).updateById(any(Chart.class));
         }
 
         @Test
@@ -779,44 +779,38 @@ class ChartApplicationServiceImplTest {
         }
 
         @Test
-        void retryJob_shouldRequeueChartAndSendMessage() {
+        void retryJob_shouldRequeueAndSendMessage() {
             when(analysisJobService.retry(1L, USER_ID)).thenReturn(true);
-            when(analysisJobService.getForUser(1L, USER_ID)).thenReturn(job(1L, 2L));
 
             assertTrue(chartApplicationService.retryJob(1L, user));
 
-            verify(chartService).updateById(argThat((Chart chart) ->
-                    chart.getId() == 2L && "queued".equals(chart.getStatus())));
+            // retry() requeues the chart itself.
             verify(biMessageProducer).sendMessage(1L);
+            verify(chartService, never()).updateById(any(Chart.class));
         }
 
         @Test
-        void retryJob_whenQueueUnavailable_shouldFailJobAndChart() {
+        void retryJob_whenQueueUnavailable_shouldFailJob() {
             when(analysisJobService.retry(1L, USER_ID)).thenReturn(true);
-            when(analysisJobService.getForUser(1L, USER_ID)).thenReturn(job(1L, 2L));
             doThrow(new IllegalStateException("broker down")).when(biMessageProducer).sendMessage(1L);
             when(analysisJobService.failQueued(eq(1L), anyString())).thenReturn(true);
 
             assertBusinessError(ErrorCode.SYSTEM_ERROR, () -> chartApplicationService.retryJob(1L, user));
 
             verify(analysisJobService).failQueued(eq(1L), argThat(reason -> reason.contains("broker down")));
-            verify(chartService).updateById(argThat((Chart chart) -> "failed".equals(chart.getStatus())));
         }
 
         @Test
         void retryJob_whenPublishFailureIsAmbiguousButWorkerStarted_shouldReportSuccess() {
             when(analysisJobService.retry(1L, USER_ID)).thenReturn(true);
-            when(analysisJobService.getForUser(1L, USER_ID)).thenReturn(job(1L, 2L));
             doThrow(new IllegalStateException("channel closed")).when(biMessageProducer).sendMessage(1L);
             when(analysisJobService.failQueued(eq(1L), anyString())).thenReturn(false);
 
             assertTrue(chartApplicationService.retryJob(1L, user));
-
-            verify(chartService, never()).updateById(argThat((Chart chart) -> "failed".equals(chart.getStatus())));
         }
 
         @Test
-        void cancelJob_shouldValidateThenCancelChart() {
+        void cancelJob_shouldValidateThenCancel() {
             when(analysisJobService.getForUser(1L, USER_ID)).thenReturn(null, job(1L, 2L), job(1L, 2L));
             when(analysisJobService.cancel(1L, USER_ID)).thenReturn(false, true);
 
@@ -824,8 +818,8 @@ class ChartApplicationServiceImplTest {
             assertBusinessError(ErrorCode.OPERATION_ERROR, () -> chartApplicationService.cancelJob(1L, user));
             assertTrue(chartApplicationService.cancelJob(1L, user));
 
-            verify(chartService).updateById(argThat((Chart chart) ->
-                    chart.getId() == 2L && "cancelled".equals(chart.getStatus())));
+            // cancel() moves the chart to cancelled in its own transaction.
+            verify(chartService, never()).updateById(any(Chart.class));
         }
     }
 

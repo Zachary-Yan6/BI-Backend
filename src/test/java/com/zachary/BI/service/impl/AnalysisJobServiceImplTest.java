@@ -6,12 +6,12 @@ import com.zachary.BI.config.AnalysisRetryProperties;
 import com.zachary.BI.exception.BusinessException;
 import com.zachary.BI.mapper.AnalysisJobEventMapper;
 import com.zachary.BI.mapper.AnalysisJobMapper;
+import com.zachary.BI.mapper.ChartMapper;
 import com.zachary.BI.mapper.UserMapper;
 import com.zachary.BI.model.entity.AnalysisJob;
 import com.zachary.BI.model.entity.AnalysisJobEvent;
 import com.zachary.BI.model.entity.Chart;
 import com.zachary.BI.model.enums.AnalysisJobStatusEnum;
-import com.zachary.BI.service.ChartService;
 import com.zachary.BI.support.MybatisPlusTestSupport;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -23,6 +23,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 
 import java.util.Date;
 import java.util.List;
@@ -55,7 +56,7 @@ class AnalysisJobServiceImplTest {
     private AnalysisJobEventMapper analysisJobEventMapper;
 
     @Mock
-    private ChartService chartService;
+    private ChartMapper chartMapper;
 
     @Mock
     private UserMapper userMapper;
@@ -335,52 +336,59 @@ class AnalysisJobServiceImplTest {
     }
 
     @Test
-    void requeueAfterPersistenceFailure_shouldRequeueJobAndChart() {
-        AnalysisJob running = job(1L, "running");
-        running.setChartId(9L);
-        when(analysisJobMapper.selectById(1L)).thenReturn(running);
+    void eachSuccessfulTransition_shouldMoveTheChartToTheSameStatusInItsTransaction() {
         when(analysisJobMapper.update(isNull(), any())).thenReturn(1);
-        when(chartService.updateById(any(Chart.class))).thenReturn(true);
+        AnalysisJob running = job(1L, "running");
+        running.setRetryCount(0);
+        running.setMaxRetries(3);
+        when(analysisJobMapper.selectById(1L)).thenReturn(running);
 
-        analysisJobService.requeueAfterPersistenceFailure(1L, "db down");
+        analysisJobService.start(1L);
+        analysisJobService.scheduleRetry(1L, "AI provider timeout");
+        analysisJobService.failRunning(1L, "Not retryable: 401");
+        analysisJobService.cancel(1L, 7L);
+        analysisJobService.recoverStaleRunning(1L, new Date());
 
-        ArgumentCaptor<Chart> chart = ArgumentCaptor.forClass(Chart.class);
-        verify(chartService).updateById(chart.capture());
-        assertEquals(9L, chart.getValue().getId());
-        assertEquals("queued", chart.getValue().getStatus());
-        assertEquals("queued", capturedEvent().getStatus());
+        InOrder order = inOrder(chartMapper);
+        // start() previously left the chart "queued", so the "analyzing" filter never found a running job.
+        order.verify(chartMapper).updateStatusForJob(1L, "running", null);
+        order.verify(chartMapper).updateStatusForJob(1L, "retrying", "AI provider timeout");
+        order.verify(chartMapper).updateStatusForJob(1L, "failed", "Not retryable: 401");
+        order.verify(chartMapper).updateStatusForJob(1L, "cancelled", "Cancelled by the user.");
+        order.verify(chartMapper).updateStatusForJob(1L, "retrying", "The worker stopped responding; retrying.");
     }
 
     @Test
-    void requeueAfterPersistenceFailure_whenJobNotRunning_shouldThrow() {
-        when(analysisJobMapper.selectById(1L)).thenReturn(null, job(1L, "failed"));
-
-        assertBusinessError(ErrorCode.OPERATION_ERROR,
-                () -> analysisJobService.requeueAfterPersistenceFailure(1L, "reason"));
-        assertBusinessError(ErrorCode.OPERATION_ERROR,
-                () -> analysisJobService.requeueAfterPersistenceFailure(1L, "reason"));
-        verify(analysisJobMapper, never()).update(any(), any());
-    }
-
-    @Test
-    void requeueAfterPersistenceFailure_whenJobUpdateLosesRace_shouldThrow() {
-        when(analysisJobMapper.selectById(1L)).thenReturn(job(1L, "running"));
+    void transitionThatChangesNothing_shouldLeaveTheChartAlone() {
+        // 0 rows: another actor moved the job first, and its own transition already set the chart.
         when(analysisJobMapper.update(isNull(), any())).thenReturn(0);
 
-        assertBusinessError(ErrorCode.OPERATION_ERROR,
-                () -> analysisJobService.requeueAfterPersistenceFailure(1L, "reason"));
-        verifyNoInteractions(chartService);
+        analysisJobService.start(1L);
+        analysisJobService.fail(1L, "late failure");
+        analysisJobService.cancel(1L, 7L);
+
+        verifyNoInteractions(chartMapper);
     }
 
     @Test
-    void requeueAfterPersistenceFailure_whenChartUpdateFails_shouldThrowWithoutEvent() {
-        when(analysisJobMapper.selectById(1L)).thenReturn(job(1L, "running"));
+    void retry_shouldMoveTheChartBackToQueued() {
+        when(analysisJobMapper.selectOne(any())).thenReturn(job(1L, "failed"), (AnalysisJob) null);
         when(analysisJobMapper.update(isNull(), any())).thenReturn(1);
-        when(chartService.updateById(any(Chart.class))).thenReturn(false);
 
-        assertBusinessError(ErrorCode.OPERATION_ERROR,
-                () -> analysisJobService.requeueAfterPersistenceFailure(1L, "reason"));
-        verifyNoInteractions(analysisJobEventMapper);
+        assertTrue(analysisJobService.retry(1L, 7L));
+
+        verify(chartMapper).updateStatusForJob(1L, "queued", null);
+    }
+
+    @Test
+    void retry_whenAnIdenticalAnalysisStartsInBetween_shouldReturnFalseInsteadOfFailing() {
+        // findActiveJob saw nothing, then a new identical submission took the active fingerprint.
+        when(analysisJobMapper.selectOne(any())).thenReturn(job(1L, "failed"), (AnalysisJob) null);
+        when(analysisJobMapper.update(isNull(), any())).thenThrow(new DuplicateKeyException("uk_analysis_job_active_input"));
+
+        assertFalse(analysisJobService.retry(1L, 7L));
+
+        verifyNoInteractions(chartMapper, analysisJobEventMapper);
     }
 
     @Test

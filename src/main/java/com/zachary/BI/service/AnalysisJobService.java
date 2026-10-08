@@ -70,12 +70,6 @@ public interface AnalysisJobService {
 
     List<AnalysisJobEvent> listEvents(long jobId);
 
-    /**
-     * Returns a running job to the queue after its completed AI result could not
-     * be persisted. This does not consume an AI retry attempt.
-     */
-    void requeueAfterPersistenceFailure(long jobId, String reason);
-
     /** Running jobs whose worker started before the cutoff, oldest first. */
     List<AnalysisJob> listStaleRunning(Date startedBefore, int limit);
 

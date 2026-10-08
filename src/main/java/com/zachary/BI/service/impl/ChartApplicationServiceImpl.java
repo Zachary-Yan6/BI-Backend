@@ -264,16 +264,14 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
 
     @Override
     public boolean retryJob(long jobId, User user) {
+        // retry() also moves the chart back to queued, in the same transaction.
         ThrowUtils.throwIf(!analysisJobService.retry(jobId, user.getId()), ErrorCode.OPERATION_ERROR,
-                "Only failed jobs can be retried.");
-        AnalysisJob job = analysisJobService.getForUser(jobId, user.getId());
-        updateChartStatus(job.getChartId(), AnalysisJobStatusEnum.QUEUED.getValue(), null);
+                "Only a failed job can be retried, and not while the same analysis is already in progress.");
         try {
             biMessageProducer.sendMessage(jobId);
         } catch (RuntimeException exception) {
             // Same ambiguity as in submitAnalysis: fail the job only while no worker has started it.
             if (analysisJobService.failQueued(jobId, "Could not submit retry to the queue: " + exception.getMessage())) {
-                updateChartStatus(job.getChartId(), AnalysisJobStatusEnum.FAILED.getValue(), "Could not submit retry to the queue.");
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Unable to queue the retry");
             }
             log.warn("Publishing retry of job {} reported a failure, but a worker already started it", jobId, exception);
@@ -287,7 +285,6 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         ThrowUtils.throwIf(job == null, ErrorCode.NOT_FOUND_ERROR);
         ThrowUtils.throwIf(!analysisJobService.cancel(jobId, user.getId()), ErrorCode.OPERATION_ERROR,
                 "Only queued or retrying jobs can be cancelled.");
-        updateChartStatus(job.getChartId(), AnalysisJobStatusEnum.CANCELLED.getValue(), "Cancelled by the user.");
         return true;
     }
 
@@ -356,7 +353,6 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
             // A confirm timeout, or the nack Spring generates locally when the channel closes, does not prove the
             // broker lacks the message: a worker may already be running the job. Fail it only while still queued.
             if (analysisJobService.failQueued(job.getId(), "Could not submit the job to the queue: " + exception.getMessage())) {
-                updateChartStatus(chart.getId(), AnalysisJobStatusEnum.FAILED.getValue(), "Could not submit the job to the queue.");
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Unable to queue the analysis job");
             }
             log.warn("Publishing job {} reported a failure, but a worker already started it", job.getId(), exception);
@@ -606,13 +602,6 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         ThrowUtils.throwIf(!List.of("csv", "xlsx").contains(suffix), ErrorCode.PARAMS_ERROR, "Unsupported file format");
     }
 
-    private void updateChartStatus(long chartId, String status, String message) {
-        Chart update = new Chart();
-        update.setId(chartId);
-        update.setStatus(status);
-        update.setExecMessage(message);
-        chartService.updateById(update);
-    }
 
     private BiResponse reusedResponse(AnalysisJob job) {
         BiResponse response = new BiResponse();

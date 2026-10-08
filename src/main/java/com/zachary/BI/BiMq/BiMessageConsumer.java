@@ -100,10 +100,10 @@ public class BiMessageConsumer {
             log.error("Analysis job {} failed during AI processing", jobId, aiException);
             AiFailureClassifier.AiFailure failure = AiFailureClassifier.classify(aiException);
             if (failure.retryable()) {
-                handleFailure(jobId, job, aiException.getMessage(), failure.retryAfter());
+                handleFailure(jobId, aiException.getMessage(), failure.retryAfter());
             } else {
                 // e.g. 401 or 402: every retry would get the same answer, so report the real cause now.
-                failPermanently(jobId, job, "Not retryable: " + aiException.getMessage());
+                failPermanently(jobId, "Not retryable: " + aiException.getMessage());
             }
             channel.basicAck(deliveryTag, false);
             return;
@@ -131,7 +131,6 @@ public class BiMessageConsumer {
             // and sends the job to the delayed RabbitMQ retry queue.
             handleFailure(
                     jobId,
-                    job,
                     "Result persistence failed: " + persistenceException.getMessage(),
                     null
             );
@@ -146,7 +145,7 @@ public class BiMessageConsumer {
     }
 
 
-    private void handleFailure(long jobId, AnalysisJob job, String reason, Duration retryAfter) {
+    private void handleFailure(long jobId, String reason, Duration retryAfter) {
         int retryAttempt = analysisJobService.scheduleRetry(jobId, reason);
         if (retryAttempt < 0) {
             // Another actor (normally the recovery task) already owns this job; failing it here would
@@ -158,7 +157,6 @@ public class BiMessageConsumer {
             try {
                 RetryDelayPolicy.RetryPlan plan = retryDelayPolicy.plan(retryAttempt, retryAfter);
                 biMessageProducer.scheduleRetry(jobId, plan.tier(), plan.delay().toMillis());
-                updateChartStatus(job.getChartId(), AnalysisJobStatusEnum.RETRYING.getValue(), reason);
                 return;
             } catch (RuntimeException retryPublishError) {
                 reason = "Retry scheduling failed: " + retryPublishError.getMessage();
@@ -166,32 +164,26 @@ public class BiMessageConsumer {
             }
         }
         analysisJobService.fail(jobId, reason);
-        markFailed(jobId, job, reason);
+        sendToDeadLetterQueue(jobId);
     }
 
-    private void failPermanently(long jobId, AnalysisJob job, String reason) {
+    private void failPermanently(long jobId, String reason) {
         if (!analysisJobService.failRunning(jobId, reason)) {
             log.warn("Analysis job {} is no longer running; skipping failure handling", jobId);
             return;
         }
-        markFailed(jobId, job, reason);
+        sendToDeadLetterQueue(jobId);
     }
 
-    private void markFailed(long jobId, AnalysisJob job, String reason) {
-        updateChartStatus(job.getChartId(), AnalysisJobStatusEnum.FAILED.getValue(), reason);
+    /**
+     * The job service has already moved the job, and its chart, to failed.
+     */
+    private void sendToDeadLetterQueue(long jobId) {
         try {
             biMessageProducer.sendToDeadLetterQueue(jobId);
         } catch (RuntimeException deadLetterError) {
             log.error("Could not publish analysis job {} to the dead-letter queue", jobId, deadLetterError);
         }
-    }
-
-    private void updateChartStatus(long chartId, String status, String message) {
-        Chart update = new Chart();
-        update.setId(chartId);
-        update.setStatus(status);
-        update.setExecMessage(message);
-        chartService.updateById(update);
     }
 
     private String buildUserInput(Chart chart) {

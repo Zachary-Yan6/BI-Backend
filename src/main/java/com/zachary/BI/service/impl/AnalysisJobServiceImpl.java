@@ -8,15 +8,15 @@ import com.zachary.BI.config.AnalysisRetryProperties;
 import com.zachary.BI.exception.ThrowUtils;
 import com.zachary.BI.model.entity.AnalysisJob;
 import com.zachary.BI.model.entity.AnalysisJobEvent;
-import com.zachary.BI.model.entity.Chart;
 import com.zachary.BI.model.enums.AnalysisJobStatusEnum;
 import com.zachary.BI.mapper.AnalysisJobEventMapper;
 import com.zachary.BI.mapper.AnalysisJobMapper;
+import com.zachary.BI.mapper.ChartMapper;
 import com.zachary.BI.mapper.UserMapper;
 import com.zachary.BI.service.AnalysisJobService;
-import com.zachary.BI.service.ChartService;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,7 +39,7 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
     @Resource
     private AnalysisJobEventMapper analysisJobEventMapper;
     @Resource
-    private ChartService chartService;
+    private ChartMapper chartMapper;
     @Resource
     private AnalysisRetryProperties retryProperties;
     @Resource
@@ -102,6 +102,8 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
                 .set(AnalysisJob::getStartedAt, now));
         if (changed > 0) {
             addEvent(jobId, AnalysisJobStatusEnum.RUNNING.getValue(), "Worker started processing the analysis.");
+            // Without this the chart stayed "queued" during the AI call and the "analyzing" filter found nothing.
+            syncChart(jobId, AnalysisJobStatusEnum.RUNNING, null);
         }
         return changed > 0;
     }
@@ -118,7 +120,8 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
                 .set(AnalysisJob::getFailureReason, null)
                 .set(AnalysisJob::getFinishedAt, now));
 
-// If this throws, the outer persistSuccess transaction rolls back chart changes too.
+        // persistSuccess already set the chart to succeeded, with its results, in this same transaction.
+        // If this throws, that transaction rolls back the chart changes too.
         ThrowUtils.throwIf(updated != 1, ErrorCode.OPERATION_ERROR,
                 "Failed to mark the analysis job as succeeded.");
 
@@ -149,6 +152,7 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         }
         addEvent(jobId, AnalysisJobStatusEnum.RETRYING.getValue(),
                 "Attempt " + nextAttempt + " failed; retry has been scheduled.");
+        syncChart(jobId, AnalysisJobStatusEnum.RETRYING, truncate(reason));
         return nextAttempt;
     }
 
@@ -182,6 +186,7 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         if (changed > 0) {
             addEvent(jobId, AnalysisJobStatusEnum.FAILED.getValue(),
                     StringUtils.abbreviate("Analysis failed: " + truncate(reason), MAX_EVENT_MESSAGE_LENGTH));
+            syncChart(jobId, AnalysisJobStatusEnum.FAILED, truncate(reason));
         }
         return changed > 0;
     }
@@ -198,6 +203,7 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
                 .set(AnalysisJob::getCancelledAt, new Date()));
         if (changed > 0) {
             addEvent(jobId, AnalysisJobStatusEnum.CANCELLED.getValue(), "Cancelled by the user before processing started.");
+            syncChart(jobId, AnalysisJobStatusEnum.CANCELLED, "Cancelled by the user.");
         }
         return changed > 0;
     }
@@ -221,6 +227,7 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
                     .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.CANCELLED.getValue())
                     .set(AnalysisJob::getActiveFingerprint, null)
                     .set(AnalysisJob::getCancelledAt, new Date()));
+            // The chart itself is being deleted in this transaction, so its status is not updated.
             if (changed > 0) {
                 addEvent(job.getId(), AnalysisJobStatusEnum.CANCELLED.getValue(), "Cancelled because the chart was deleted.");
                 cancelled++;
@@ -240,16 +247,23 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         if (activeJob.isPresent() && !activeJob.get().getId().equals(jobId)) {
             return false;
         }
-        int changed = analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
-                .eq(AnalysisJob::getId, jobId)
-                .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.FAILED.getValue())
-                .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.QUEUED.getValue())
-                .set(AnalysisJob::getRetryCount, 0)
-                .set(AnalysisJob::getActiveFingerprint, job.getDataFingerprint())
-                .set(AnalysisJob::getFailureReason, null)
-                .set(AnalysisJob::getFinishedAt, null));
+        int changed;
+        try {
+            changed = analysisJobMapper.update(null, new LambdaUpdateWrapper<AnalysisJob>()
+                    .eq(AnalysisJob::getId, jobId)
+                    .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.FAILED.getValue())
+                    .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.QUEUED.getValue())
+                    .set(AnalysisJob::getRetryCount, 0)
+                    .set(AnalysisJob::getActiveFingerprint, job.getDataFingerprint())
+                    .set(AnalysisJob::getFailureReason, null)
+                    .set(AnalysisJob::getFinishedAt, null));
+        } catch (DuplicateKeyException sameAnalysisStarted) {
+            // An identical analysis was submitted after the check above and now holds the active fingerprint.
+            return false;
+        }
         if (changed > 0) {
             addEvent(jobId, AnalysisJobStatusEnum.QUEUED.getValue(), "User requested another processing run.");
+            syncChart(jobId, AnalysisJobStatusEnum.QUEUED, null);
         }
         return changed > 0;
     }
@@ -289,58 +303,6 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
     }
 
     @Override
-    @Transactional(
-            propagation = Propagation.REQUIRES_NEW,
-            rollbackFor = Exception.class
-    )
-    public void requeueAfterPersistenceFailure(long jobId, String reason) {
-        AnalysisJob job = analysisJobMapper.selectById(jobId);
-
-        ThrowUtils.throwIf(
-                job == null || !AnalysisJobStatusEnum.RUNNING.getValue().equals(job.getStatus()),
-                ErrorCode.OPERATION_ERROR,
-                "Only a running job can be returned to the queue."
-        );
-
-        // Move the job back to queued only if no worker has already changed it.
-        int jobUpdated = analysisJobMapper.update(
-                null,
-                new LambdaUpdateWrapper<AnalysisJob>()
-                        .eq(AnalysisJob::getId, jobId)
-                        .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.RUNNING.getValue())
-                        .set(AnalysisJob::getStatus, AnalysisJobStatusEnum.QUEUED.getValue())
-                        .set(AnalysisJob::getFailureReason, truncate(reason))
-        );
-
-        ThrowUtils.throwIf(
-                jobUpdated != 1,
-                ErrorCode.OPERATION_ERROR,
-                "Failed to return the analysis job to the queue."
-        );
-
-        // Keep chart.status and analysis_job.status consistent.
-        Chart chartUpdate = new Chart();
-        chartUpdate.setId(job.getChartId());
-        chartUpdate.setStatus(AnalysisJobStatusEnum.QUEUED.getValue());
-        chartUpdate.setExecMessage("Result persistence was interrupted. The job will be retried.");
-
-        boolean chartUpdated = chartService.updateById(chartUpdate);
-
-        ThrowUtils.throwIf(
-                !chartUpdated,
-                ErrorCode.OPERATION_ERROR,
-                "Failed to return the chart to queued status."
-        );
-
-        // This event is inserted only after both status updates have succeeded.
-        addEvent(
-                jobId,
-                AnalysisJobStatusEnum.QUEUED.getValue(),
-                "Result persistence failed; the RabbitMQ message was returned to the queue."
-        );
-    }
-
-    @Override
     public List<AnalysisJob> listStaleRunning(Date startedBefore, int limit) {
         return analysisJobMapper.selectList(new LambdaQueryWrapper<AnalysisJob>()
                 .eq(AnalysisJob::getStatus, AnalysisJobStatusEnum.RUNNING.getValue())
@@ -366,6 +328,7 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         if (retried == 1) {
             addEvent(jobId, AnalysisJobStatusEnum.RETRYING.getValue(),
                     "The worker stopped responding; the job has been queued again.");
+            syncChart(jobId, AnalysisJobStatusEnum.RETRYING, "The worker stopped responding; retrying.");
             return AnalysisJobStatusEnum.RETRYING;
         }
 
@@ -380,6 +343,7 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         if (failed == 1) {
             addEvent(jobId, AnalysisJobStatusEnum.FAILED.getValue(),
                     "The worker stopped responding and no retries remain.");
+            syncChart(jobId, AnalysisJobStatusEnum.FAILED, "The worker stopped responding and no retries remain.");
             return AnalysisJobStatusEnum.FAILED;
         }
         return null;
@@ -405,6 +369,14 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
                         AnalysisJobStatusEnum.RETRYING.getValue())
                 .apply("updateTime < NOW() - INTERVAL {0} SECOND", idleSeconds)
                 .setSql("updateTime = NOW()")) == 1;
+    }
+
+    /**
+     * Every successful transition updates the chart too, in the same transaction, so callers never have to
+     * remember to. succeed() is the exception: persistSuccess writes the chart together with its results.
+     */
+    private void syncChart(long jobId, AnalysisJobStatusEnum status, String message) {
+        chartMapper.updateStatusForJob(jobId, status.getValue(), message);
     }
 
     private void addEvent(long jobId, String status, String message) {
