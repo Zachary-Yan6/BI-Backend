@@ -7,6 +7,7 @@ import com.zachary.BI.common.DeleteRequest;
 import com.zachary.BI.common.ErrorCode;
 import com.zachary.BI.exception.BusinessException;
 import com.zachary.BI.manager.RedisRateLimitManager;
+import com.zachary.BI.manager.SpreadsheetParsingLimiter;
 import com.zachary.BI.model.dto.chart.ChartAddRequest;
 import com.zachary.BI.model.dto.chart.ChartEditRequest;
 import com.zachary.BI.model.dto.chart.ChartQueryRequest;
@@ -32,6 +33,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.support.TransactionCallback;
@@ -41,6 +43,7 @@ import org.springframework.mock.web.MockMultipartFile;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -90,6 +93,8 @@ class ChartApplicationServiceImplTest {
     private ResumableUploadService resumableUploadService;
     @Mock
     private TransactionTemplate transactionTemplate;
+    @Spy
+    private SpreadsheetParsingLimiter parsingLimiter = new SpreadsheetParsingLimiter(2, Duration.ofSeconds(1));
 
     @InjectMocks
     private ChartApplicationServiceImpl chartApplicationService;
@@ -375,9 +380,9 @@ class ChartApplicationServiceImplTest {
                     () -> chartApplicationService.generateChart((MockMultipartFile) null, validRequest(), user));
             assertBusinessError(ErrorCode.PARAMS_ERROR,
                     () -> chartApplicationService.generateChart(empty, validRequest(), user));
-            assertBusinessError(ErrorCode.SYSTEM_ERROR,
+            assertBusinessError(ErrorCode.PARAMS_ERROR,
                     () -> chartApplicationService.generateChart(tooLarge, validRequest(), user));
-            assertBusinessError(ErrorCode.SYSTEM_ERROR,
+            assertBusinessError(ErrorCode.PARAMS_ERROR,
                     () -> chartApplicationService.generateChart(wrongType, validRequest(), user));
             verifyNoInteractions(dataQualityService, chartService);
         }
@@ -561,14 +566,39 @@ class ChartApplicationServiceImplTest {
         }
 
         @Test
-        void inspectData_shouldValidateThenInspect() throws Exception {
+        void inspectData_shouldValidateThenInspectUnderTheUsersParsingPermit() throws Exception {
             MockMultipartFile file = csvFile("a.csv", "a\n1\n");
             DataQualityReport report = report(false);
-            when(dataQualityService.inspect(file)).thenReturn(report);
+            when(dataQualityService.inspect(any(ExcelUtils.Spreadsheet.class))).thenReturn(report);
 
-            assertSame(report, chartApplicationService.inspectData(file));
+            assertSame(report, chartApplicationService.inspectData(file, user));
+            verify(parsingLimiter).parse(eq(USER_ID), any());
             assertBusinessError(ErrorCode.PARAMS_ERROR,
-                    () -> chartApplicationService.inspectData((MockMultipartFile) null));
+                    () -> chartApplicationService.inspectData((MockMultipartFile) null, user));
+        }
+
+        @Test
+        void validateDataFile_shouldReportBadInputAsParamsError() {
+            // Previously SYSTEM_ERROR, which told the user the server had failed.
+            MockMultipartFile tooLarge = new MockMultipartFile("file", "big.csv", "text/csv", new byte[1024 * 1024 + 1]);
+            MockMultipartFile wrongType = csvFile("notes.txt", "a\n1\n");
+
+            assertBusinessError(ErrorCode.PARAMS_ERROR, () -> chartApplicationService.inspectData(tooLarge, user));
+            assertBusinessError(ErrorCode.PARAMS_ERROR, () -> chartApplicationService.inspectData(wrongType, user));
+            verifyNoInteractions(dataQualityService);
+        }
+
+        @Test
+        void unreadableSpreadsheet_shouldBeAParamsErrorNotAServerError() {
+            // Not a ZIP at all, like a corrupt workbook or one POI rejects as a zip bomb.
+            MockMultipartFile corrupt = new MockMultipartFile("file", "broken.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "not a workbook".getBytes(StandardCharsets.UTF_8));
+
+            assertBusinessError(ErrorCode.PARAMS_ERROR, () -> chartApplicationService.inspectData(corrupt, user));
+            assertBusinessError(ErrorCode.PARAMS_ERROR,
+                    () -> chartApplicationService.generateChart(corrupt, validRequest(), user));
+            verifyNoInteractions(dataQualityService, analysisJobService);
         }
     }
 
@@ -666,9 +696,12 @@ class ChartApplicationServiceImplTest {
             CompletedUploadFile upload = completedUpload("a\n1\n", "csv", 4L);
             DataQualityReport report = report(false);
             when(resumableUploadService.resolveCompletedUpload("token", user)).thenReturn(upload);
-            when(dataQualityService.inspect(upload.path(), "csv")).thenReturn(report);
+            ArgumentCaptor<ExcelUtils.Spreadsheet> parsed = ArgumentCaptor.forClass(ExcelUtils.Spreadsheet.class);
+            when(dataQualityService.inspect(parsed.capture())).thenReturn(report);
 
             assertSame(report, chartApplicationService.inspectData("token", user));
+            assertEquals(List.of(List.of("a"), List.of("1")), parsed.getValue().rows());
+            verify(parsingLimiter).parse(eq(USER_ID), any());
         }
 
         private CompletedUploadFile completedUpload(String content, String type, long declaredSize) throws Exception {

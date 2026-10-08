@@ -6,12 +6,9 @@ import com.zachary.BI.model.vo.DataQualityReport;
 import com.zachary.BI.utils.ExcelUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
-import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -34,20 +31,6 @@ public class DataQualityService {
             DateTimeFormatter.ofPattern("uuuu/MM/dd HH:mm:ss")
     );
 
-    public DataQualityReport inspect(MultipartFile file) throws IOException {
-        return inspect(ExcelUtils.read(file));
-    }
-
-    /**
-     * Inspects a private file that has already passed upload-session ownership checks.
-     */
-    public DataQualityReport inspect(
-            Path filePath,
-            String sourceFileType
-    ) throws IOException {
-        return inspect(ExcelUtils.read(filePath, sourceFileType));
-    }
-
     /**
      * Inspects rows that were already parsed, so a caller that also needs the CSV parses the file only once.
      */
@@ -56,8 +39,10 @@ public class DataQualityService {
         if (spreadsheet.truncated()) {
             report.setTruncated(true);
             // INFO, not WARNING: a large file is not a quality problem and must not force a confirmation step.
-            report.getIssues().add(new DataQualityIssue("INFO", null, "The file exceeds " + ExcelUtils.MAX_DATA_ROWS
-                    + " data rows or " + ExcelUtils.MAX_COLUMNS + " columns; only that part was inspected."));
+            report.getIssues().add(new DataQualityIssue("INFO", null, "The file is larger than can be inspected (more"
+                    + " than " + ExcelUtils.MAX_DATA_ROWS + " data rows, " + ExcelUtils.MAX_COLUMNS + " columns, "
+                    + ExcelUtils.MAX_CELLS + " cells, or " + ExcelUtils.MAX_CELL_CHARS + " characters in a cell);"
+                    + " only the first part was inspected."));
         }
         return report;
     }

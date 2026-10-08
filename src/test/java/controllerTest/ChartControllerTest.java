@@ -117,7 +117,7 @@ public class ChartControllerTest {
 
         assertNotNull(response);
         verify(userService).getLoginUser(request);
-        verify(chartApplicationService).inspectData(file);
+        verify(chartApplicationService).inspectData(file, user);
     }
 
     @Test
