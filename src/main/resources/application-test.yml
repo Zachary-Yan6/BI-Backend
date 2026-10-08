@@ -9,7 +9,10 @@ spring:
       database: 3
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      timeout: 5s
+      # Redis only backs the rate limiter, a sub-millisecond script; when it does not answer quickly the limiter
+      # falls back to this instance (RedisRateLimitManager), so do not keep a request waiting for it.
+      timeout: 500ms
+      connect-timeout: 500ms
       password: ${REDIS_PASSWORD:}
 server:
   port: 8101
