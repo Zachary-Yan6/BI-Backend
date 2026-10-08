@@ -15,7 +15,10 @@ spring:
       database: 3
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
-      timeout: 5s
+      # Redis only backs the rate limiter, a sub-millisecond script; when it does not answer quickly the limiter
+      # falls back to this instance (RedisRateLimitManager), so do not keep a request waiting for it.
+      timeout: 500ms
+      connect-timeout: 500ms
   rabbitmq:
     host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
@@ -71,6 +74,11 @@ management:
     health:
       # Report UP/DOWN only; component details (hosts, versions) stay private.
       show-details: never
+  health:
+    redis:
+      # Redis is optional (the rate limiter falls back without it), so its outage must not report the whole backend
+      # DOWN: deploy.sh would roll back a healthy release, and the rollback would fail the same check.
+      enabled: false
 
 springdoc:
   api-docs:
