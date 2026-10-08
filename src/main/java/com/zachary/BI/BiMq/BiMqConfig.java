@@ -2,11 +2,16 @@ package com.zachary.BI.BiMq;
 
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.Declarable;
+import org.springframework.amqp.core.Declarables;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
 import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.ArrayList;
+import java.util.List;
 
 @Configuration
 public class BiMqConfig {
@@ -38,18 +43,23 @@ public class BiMqConfig {
         return new DirectExchange(BiMqConstant.RETRY_EXCHANGE_NAME, true, false);
     }
 
+    /**
+     * One retry queue per delay tier. A message waits in it for its own TTL and then dead-letters back to the
+     * analysis queue. Delays are per message, not queue arguments, so changing them never conflicts with a queue
+     * that already exists on the broker.
+     */
     @Bean
-    public Queue retryQueue() {
-        // when message died in this queue, send it to BI_EXCHANGE_NAME, or actual dead letter queue
-        return QueueBuilder.durable(BiMqConstant.RETRY_QUEUE_NAME)
-                .deadLetterExchange(BiMqConstant.BI_EXCHANGE_NAME)
-                .deadLetterRoutingKey(BiMqConstant.BI_ROUTING_KEY)
-                .build();
-    }
-
-    @Bean
-    public Binding retryBinding(DirectExchange retryExchange, Queue retryQueue) {
-        return BindingBuilder.bind(retryQueue).to(retryExchange).with(BiMqConstant.RETRY_ROUTING_KEY);
+    public Declarables retryQueues(DirectExchange retryExchange, RetryDelayPolicy retryDelayPolicy) {
+        List<Declarable> declarables = new ArrayList<>();
+        for (int tier = 1; tier <= retryDelayPolicy.maxRetries(); tier++) {
+            Queue queue = QueueBuilder.durable(BiMqConstant.RETRY_QUEUE_NAME_PREFIX + tier)
+                    .deadLetterExchange(BiMqConstant.BI_EXCHANGE_NAME)
+                    .deadLetterRoutingKey(BiMqConstant.BI_ROUTING_KEY)
+                    .build();
+            declarables.add(queue);
+            declarables.add(BindingBuilder.bind(queue).to(retryExchange).with(BiMqConstant.RETRY_ROUTING_KEY_PREFIX + tier));
+        }
+        return new Declarables(declarables);
     }
 
     @Bean

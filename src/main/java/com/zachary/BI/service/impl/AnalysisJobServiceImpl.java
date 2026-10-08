@@ -3,6 +3,7 @@ package com.zachary.BI.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.zachary.BI.common.ErrorCode;
+import com.zachary.BI.config.AnalysisRetryProperties;
 import com.zachary.BI.exception.ThrowUtils;
 import com.zachary.BI.model.entity.AnalysisJob;
 import com.zachary.BI.model.entity.AnalysisJobEvent;
@@ -28,7 +29,6 @@ import java.util.UUID;
 @Service
 @Slf4j
 public class AnalysisJobServiceImpl implements AnalysisJobService {
-    private static final int DEFAULT_MAX_RETRIES = 3;
     /** analysis_job_event.message is varchar(512). */
     private static final int MAX_EVENT_MESSAGE_LENGTH = 512;
 
@@ -38,6 +38,8 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
     private AnalysisJobEventMapper analysisJobEventMapper;
     @Resource
     private ChartService chartService;
+    @Resource
+    private AnalysisRetryProperties retryProperties;
 
     @Override
     public Optional<AnalysisJob> findActiveJob(long userId, String fingerprint) {
@@ -58,7 +60,8 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
         job.setActiveFingerprint(fingerprint);
         job.setStatus(AnalysisJobStatusEnum.QUEUED.getValue());
         job.setRetryCount(0);
-        job.setMaxRetries(DEFAULT_MAX_RETRIES);
+        // One retry per configured delay tier, so a job never asks for a tier that does not exist.
+        job.setMaxRetries(retryProperties.getDelays().size());
         analysisJobMapper.insert(job);
         addEvent(job.getId(), job.getStatus(), "Analysis request accepted and queued.");
         return job;
@@ -135,6 +138,12 @@ public class AnalysisJobServiceImpl implements AnalysisJobService {
     @Transactional(rollbackFor = Exception.class)
     public boolean failQueued(long jobId, String reason) {
         return failFrom(jobId, reason, AnalysisJobStatusEnum.QUEUED);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean failRunning(long jobId, String reason) {
+        return failFrom(jobId, reason, AnalysisJobStatusEnum.RUNNING);
     }
 
     private boolean failFrom(long jobId, String reason, AnalysisJobStatusEnum... fromStatuses) {

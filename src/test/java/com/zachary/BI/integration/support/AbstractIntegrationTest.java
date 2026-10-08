@@ -94,6 +94,8 @@ public abstract class AbstractIntegrationTest {
         registry.add("bi.upload.chunk-size-bytes", () -> CHUNK_SIZE);
         // Never reach the real provider, even if a developer's .env contains a key.
         registry.add("bi.ai.api-key", () -> "");
+        // Production waits 30s/2m/5m between retries; the tests cannot.
+        registry.add("bi.analysis.retry.delays", () -> "PT1S,PT2S,PT3S");
     }
 
     private static String createStagingDirectory() {

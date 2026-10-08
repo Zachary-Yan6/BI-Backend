@@ -35,6 +35,13 @@ public interface AnalysisJobService {
      */
     boolean failQueued(long jobId, String reason);
 
+    /**
+     * Fails a job only while a worker is still running it, for a failure that retrying cannot fix.
+     *
+     * @return false when another actor, normally the recovery task, already changed the job
+     */
+    boolean failRunning(long jobId, String reason);
+
     boolean cancel(long jobId, long userId);
 
     /**

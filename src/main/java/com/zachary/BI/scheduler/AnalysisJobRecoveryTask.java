@@ -1,6 +1,7 @@
 package com.zachary.BI.scheduler;
 
 import com.zachary.BI.BiMq.BiMessageProducer;
+import com.zachary.BI.BiMq.RetryDelayPolicy;
 import com.zachary.BI.config.AnalysisRecoveryProperties;
 import com.zachary.BI.model.entity.AnalysisJob;
 import com.zachary.BI.model.entity.Chart;
@@ -39,12 +40,14 @@ public class AnalysisJobRecoveryTask {
     private BiMessageProducer biMessageProducer;
     @Resource
     private AnalysisRecoveryProperties properties;
+    @Resource
+    private RetryDelayPolicy retryDelayPolicy;
     @Value("${bi.ai.read-timeout:PT3M}")
     private Duration aiReadTimeout;
 
     /**
-     * A worker still waiting for the AI provider must never look abandoned; otherwise every slow call would be
-     * reclaimed and paid for twice. Fail at startup rather than in production traffic.
+     * A worker still waiting for the AI provider, or a job still waiting out its retry delay, must never look
+     * abandoned; otherwise it would be reclaimed and paid for twice. Fail at startup rather than in production traffic.
      */
     @PostConstruct
     void validateTimeouts() {
@@ -52,6 +55,13 @@ public class AnalysisJobRecoveryTask {
             throw new IllegalStateException("bi.ai.read-timeout (" + aiReadTimeout
                     + ") must be shorter than bi.analysis.recovery.stale-running-after ("
                     + properties.getStaleRunningAfter() + ")");
+        }
+        // A job waiting in a retry queue is "retrying" and untouched; if the wait outlasted the stale threshold,
+        // this task would republish it early and the job would be scheduled twice.
+        if (retryDelayPolicy.maxDelay().compareTo(properties.getStalePendingAfter()) >= 0) {
+            throw new IllegalStateException("The longest retry delay (" + retryDelayPolicy.maxDelay()
+                    + ", from bi.analysis.retry.delays and jitter) must be shorter than "
+                    + "bi.analysis.recovery.stale-pending-after (" + properties.getStalePendingAfter() + ")");
         }
     }
 
