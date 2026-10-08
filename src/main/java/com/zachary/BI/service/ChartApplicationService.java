@@ -30,7 +30,7 @@ public interface ChartApplicationService {
     boolean editChart(ChartEditRequest request, User user, boolean isAdmin);
     BiResponse generateChart(MultipartFile file, GenChartByAIRequest request, User user) throws Exception;
     BiResponse generateChart(String fileToken, GenChartByAIRequest request, User user) throws Exception;
-    DataQualityReport inspectData(MultipartFile file) throws Exception;
+    DataQualityReport inspectData(MultipartFile file, User user) throws Exception;
     DataQualityReport inspectData(String fileToken, User user) throws Exception;
     List<AnalysisJob> listJobs(List<Long> chartIds, User user);
     List<AnalysisJobEvent> listJobEvents(long jobId, User user);

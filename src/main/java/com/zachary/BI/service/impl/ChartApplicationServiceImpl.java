@@ -28,9 +28,15 @@ import com.zachary.BI.service.ChartService;
 import com.zachary.BI.service.ResumableUploadService;
 import com.zachary.BI.utils.ExcelUtils;
 import com.zachary.BI.utils.SqlUtils;
+import com.alibaba.excel.exception.ExcelRuntimeException;
+import com.zachary.BI.manager.SpreadsheetParsingLimiter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
+import org.apache.poi.UnsupportedFileFormatException;
+import org.apache.poi.ooxml.POIXMLException;
+import org.apache.poi.openxml4j.exceptions.OpenXML4JRuntimeException;
 import org.springframework.beans.BeanUtils;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -39,10 +45,12 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import jakarta.annotation.Resource;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
+import java.util.concurrent.Callable;
 
 /**
  * Owns chart use cases: CRUD authorization, query construction, data-quality gating,
@@ -77,6 +85,8 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     private BiMessageProducer biMessageProducer;
     @Resource
     private ResumableUploadService resumableUploadService;
+    @Resource
+    private SpreadsheetParsingLimiter parsingLimiter;
 
     @Override
     public long addChart(ChartAddRequest request, User user) {
@@ -148,21 +158,18 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     public BiResponse generateChart(MultipartFile file, GenChartByAIRequest request, User user) throws Exception {
         validateDataFile(file);
 
-        // Parse once and share the rows between the quality check and the CSV for the AI.
-        ExcelUtils.Spreadsheet spreadsheet = ExcelUtils.read(file);
-        DataQualityReport qualityReport = dataQualityService.inspect(spreadsheet);
-        String csv = ExcelUtils.toCsv(spreadsheet.rows());
+        ParsedData parsed = parseForAnalysis(user, () -> ExcelUtils.read(file));
         String originalFileName = StringUtils.defaultString(file.getOriginalFilename());
         String sourceFileType = FileUtil.getSuffix(originalFileName).toLowerCase(Locale.ROOT);
         return submitAnalysis(
                 request,
                 user,
-                qualityReport,
-                csv,
+                parsed.qualityReport(),
+                parsed.csv(),
                 originalFileName,
                 sourceFileType,
                 file.getSize(),
-                csv
+                parsed.csv()
         );
     }
 
@@ -171,18 +178,14 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
         CompletedUploadFile completedUpload = resumableUploadService.resolveCompletedUpload(fileToken, user);
         validateCompletedUploadForAnalysis(completedUpload);
 
-        ExcelUtils.Spreadsheet spreadsheet = ExcelUtils.read(
-                completedUpload.path(),
-                completedUpload.sourceFileType()
-        );
-        DataQualityReport qualityReport = dataQualityService.inspect(spreadsheet);
-        String csv = ExcelUtils.toCsv(spreadsheet.rows());
+        ParsedData parsed = parseForAnalysis(user,
+                () -> ExcelUtils.read(completedUpload.path(), completedUpload.sourceFileType()));
 
         return submitAnalysis(
                 request,
                 user,
-                qualityReport,
-                csv,
+                parsed.qualityReport(),
+                parsed.csv(),
                 completedUpload.originalFileName(),
                 completedUpload.sourceFileType(),
                 completedUpload.totalSize(),
@@ -191,19 +194,51 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
     }
 
     @Override
-    public DataQualityReport inspectData(MultipartFile file) throws Exception {
+    public DataQualityReport inspectData(MultipartFile file, User user) throws Exception {
         validateDataFile(file);
-        return dataQualityService.inspect(file);
+        return parsingLimiter.parse(user.getId(),
+                () -> dataQualityService.inspect(readSpreadsheet(() -> ExcelUtils.read(file))));
     }
 
     @Override
     public DataQualityReport inspectData(String fileToken, User user) throws Exception {
         CompletedUploadFile completedUpload = resumableUploadService.resolveCompletedUpload(fileToken, user);
         validateCompletedUploadForAnalysis(completedUpload);
-        return dataQualityService.inspect(
-                completedUpload.path(),
-                completedUpload.sourceFileType()
-        );
+        return parsingLimiter.parse(user.getId(), () -> dataQualityService.inspect(readSpreadsheet(
+                () -> ExcelUtils.read(completedUpload.path(), completedUpload.sourceFileType()))));
+    }
+
+    /**
+     * Parses once, under a parsing permit, and keeps only what analysis needs: the quality report and the CSV.
+     * The parsed rows, the largest part, become garbage before the job is submitted.
+     */
+    private ParsedData parseForAnalysis(User user, Callable<ExcelUtils.Spreadsheet> reader) throws Exception {
+        return parsingLimiter.parse(user.getId(), () -> {
+            ExcelUtils.Spreadsheet spreadsheet = readSpreadsheet(reader);
+            return new ParsedData(dataQualityService.inspect(spreadsheet), ExcelUtils.toCsv(spreadsheet.rows()));
+        });
+    }
+
+    /**
+     * A file the parser rejects, a corrupt workbook or one over POI's zip-bomb limits, is the caller's input problem,
+     * not a server failure.
+     */
+    private static ExcelUtils.Spreadsheet readSpreadsheet(Callable<ExcelUtils.Spreadsheet> reader) throws Exception {
+        try {
+            return reader.call();
+        } catch (IOException | ExcelRuntimeException | UnsupportedFileFormatException | OpenXML4JRuntimeException
+                 | POIXMLException exception) {
+            // EasyExcel wraps everything, including an OutOfMemoryError; that must stay a server error.
+            if (ExceptionUtils.getRootCause(exception) instanceof Error) {
+                throw exception;
+            }
+            log.info("Rejected an unreadable spreadsheet: {}", ExceptionUtils.getRootCauseMessage(exception));
+            throw new BusinessException(ErrorCode.PARAMS_ERROR,
+                    "The file could not be read. Check that it is a valid CSV or XLSX file.");
+        }
+    }
+
+    private record ParsedData(DataQualityReport qualityReport, String csv) {
     }
 
     @Override
@@ -561,9 +596,9 @@ public class ChartApplicationServiceImpl implements ChartApplicationService {
 
     private void validateDataFile(MultipartFile file) {
         ThrowUtils.throwIf(file == null || file.isEmpty(), ErrorCode.PARAMS_ERROR, "Select a CSV or XLSX file.");
-        ThrowUtils.throwIf(file.getSize() > MAX_MULTIPART_UPLOAD_BYTES, ErrorCode.SYSTEM_ERROR, "File is too large");
+        ThrowUtils.throwIf(file.getSize() > MAX_MULTIPART_UPLOAD_BYTES, ErrorCode.PARAMS_ERROR, "File is too large");
         String suffix = FileUtil.getSuffix(file.getOriginalFilename()).toLowerCase(Locale.ROOT);
-        ThrowUtils.throwIf(!List.of("csv", "xlsx").contains(suffix), ErrorCode.SYSTEM_ERROR, "Unsupported file format");
+        ThrowUtils.throwIf(!List.of("csv", "xlsx").contains(suffix), ErrorCode.PARAMS_ERROR, "Unsupported file format");
     }
 
     private void updateChartStatus(long chartId, String status, String message) {

@@ -117,8 +117,7 @@ public class ChartController {
     @PostMapping(value = "/quality-check", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public BaseResponse<DataQualityReport> checkDataQuality(@RequestPart("file") MultipartFile file,
                                                              HttpServletRequest httpRequest) throws Exception {
-        userService.getLoginUser(httpRequest);
-        return ResultUtils.success(chartApplicationService.inspectData(file));
+        return ResultUtils.success(chartApplicationService.inspectData(file, userService.getLoginUser(httpRequest)));
     }
 
     /**

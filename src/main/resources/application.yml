@@ -91,6 +91,11 @@ bi:
     read-timeout: PT3M
 
   analysis:
+    parsing:
+      # Spreadsheets parsed at once on this instance (each holds up to ~50 MB of heap); each user gets one at a time.
+      # A request waits this long for a free slot, then gets 42900 "server is busy".
+      max-concurrent: 2
+      acquire-timeout: PT10S
     retry:
       # Wait before each retry of a failed analysis (one retry per entry, strictly increasing), plus up to
       # jitter x delay at random. 400/401/402/403/404/413/422 from the provider are not retried at all.

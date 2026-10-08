@@ -28,6 +28,8 @@ USER app
 
 EXPOSE 8101
 # Size the heap from the container's memory limit instead of the host's RAM.
-ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75"
+# Exit on the first OutOfMemoryError so Docker (restart: unless-stopped) restarts a clean JVM. Otherwise only the
+# thread that hit it fails, and a RabbitMQ consumer or scheduler thread can die while the container looks healthy.
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 CMD ["--spring.profiles.active=prod"]

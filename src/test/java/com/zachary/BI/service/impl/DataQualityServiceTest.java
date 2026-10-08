@@ -33,7 +33,7 @@ class DataQualityServiceTest {
         MockMultipartFile file = new MockMultipartFile("file", "scores.csv", "text/csv",
                 "city,score\nLondon,1\nParis,2\nRome,6\n".getBytes(StandardCharsets.UTF_8));
 
-        DataQualityReport report = dataQualityService.inspect(file);
+        DataQualityReport report = dataQualityService.inspect(ExcelUtils.read(file));
 
         assertEquals("READY", report.getRecommendation());
         assertFalse(report.isConfirmationRequired());
@@ -54,7 +54,7 @@ class DataQualityServiceTest {
         Path csv = tempDir.resolve("upload.data");
         Files.writeString(csv, "city,score\nLondon,1\nLondon,1\n");
 
-        DataQualityReport report = dataQualityService.inspect(csv, "csv");
+        DataQualityReport report = dataQualityService.inspect(ExcelUtils.read(csv, "csv"));
 
         assertEquals(2, report.getTotalRows());
         assertEquals(1, report.getDuplicateRows());
@@ -232,8 +232,10 @@ class DataQualityServiceTest {
                 new ArrayList<>(List.of(List.of("month", "sales"), List.of("Jan", "10"))), true));
 
         assertTrue(report.isTruncated());
-        assertHasIssue(report, "INFO", null, "The file exceeds " + ExcelUtils.MAX_DATA_ROWS + " data rows or "
-                + ExcelUtils.MAX_COLUMNS + " columns; only that part was inspected.");
+        assertHasIssue(report, "INFO", null, "The file is larger than can be inspected (more than "
+                + ExcelUtils.MAX_DATA_ROWS + " data rows, " + ExcelUtils.MAX_COLUMNS + " columns, "
+                + ExcelUtils.MAX_CELLS + " cells, or " + ExcelUtils.MAX_CELL_CHARS + " characters in a cell);"
+                + " only the first part was inspected.");
         assertEquals("READY", report.getRecommendation(), "a large file is not a quality problem");
     }
 

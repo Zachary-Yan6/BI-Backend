@@ -4,6 +4,7 @@ import com.alibaba.excel.EasyExcel;
 import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;
 import com.alibaba.excel.support.ExcelTypeEnum;
+import org.apache.poi.openxml4j.util.ZipSecureFile;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -30,9 +31,33 @@ public class ExcelUtils {
     public static final int MAX_COLUMNS = 100;
 
     /**
+     * Cells kept in total. Every cell is its own String of about 50 bytes however short its text, so the row and
+     * column limits alone still allowed 5 million cells: a 5 MB CSV of one-digit cells held about 125 MB of heap.
+     */
+    public static final int MAX_CELLS = 1_000_000;
+
+    /** Characters kept per cell; a chart needs labels and numbers, not documents. */
+    public static final int MAX_CELL_CHARS = 1_000;
+
+    /** Characters kept in total, after per-cell truncation. The AI receives about 60 KB of it. */
+    public static final int MAX_TOTAL_CHARS = 4_000_000;
+
+    /**
+     * Largest uncompressed part of an XLSX that POI will read. Its zip-bomb check only limits the compression
+     * ratio (100:1), so a 2.3 MB file at 42:1 could still put 100 million characters into one cell, more than any
+     * of the limits above can stop because the parser builds a whole cell before handing it over. POI counts bytes
+     * as they are read, so a normal file that hits the limits above stops long before this.
+     */
+    static final long MAX_XLSX_ENTRY_BYTES = 64L * 1024 * 1024;
+
+    static {
+        ZipSecureFile.setMaxEntrySize(MAX_XLSX_ENTRY_BYTES);
+    }
+
+    /**
      * Parsed rows (header first) padded to the same width.
      *
-     * @param truncated true when the file had more rows or columns than the limits and the rest was not read
+     * @param truncated true when the file exceeded a limit above and only its first part was kept
      */
     public record Spreadsheet(List<List<String>> rows, boolean truncated) {
     }
@@ -85,18 +110,24 @@ public class ExcelUtils {
     }
 
     /**
-     * Collects rows until the limits are reached, then tells EasyExcel to stop parsing the rest of the file.
+     * Collects rows until a limit is reached, then tells EasyExcel to stop parsing the rest of the file.
      */
     private static final class BoundedRowCollector implements ReadListener<Map<Integer, String>> {
         private final List<List<String>> rows = new ArrayList<>();
         private int columnCount;
+        private long cellCount;
+        private long charCount;
         private boolean truncated;
+        private boolean full;
 
         @Override
         public void invoke(Map<Integer, String> cells, AnalysisContext context) {
+            if (full) {
+                return;
+            }
             if (rows.size() > MAX_DATA_ROWS) {
                 // Header plus MAX_DATA_ROWS are already kept; this extra row only proves the file was longer.
-                truncated = true;
+                stop();
                 return;
             }
             int width = cells.keySet().stream().max(Integer::compareTo).map(index -> index + 1).orElse(0);
@@ -104,17 +135,39 @@ public class ExcelUtils {
                 truncated = true;
                 width = MAX_COLUMNS;
             }
+            if (cellCount + width > MAX_CELLS) {
+                stop();
+                return;
+            }
             List<String> row = new ArrayList<>(width);
+            long rowChars = 0;
             for (int columnIndex = 0; columnIndex < width; columnIndex++) {
-                row.add(Objects.toString(cells.get(columnIndex), ""));
+                String value = Objects.toString(cells.get(columnIndex), "");
+                if (value.length() > MAX_CELL_CHARS) {
+                    truncated = true;
+                    value = value.substring(0, MAX_CELL_CHARS);
+                }
+                row.add(value);
+                rowChars += value.length();
+            }
+            if (charCount + rowChars > MAX_TOTAL_CHARS) {
+                stop();
+                return;
             }
             rows.add(row);
+            cellCount += width;
+            charCount += rowChars;
             columnCount = Math.max(columnCount, width);
+        }
+
+        private void stop() {
+            truncated = true;
+            full = true;
         }
 
         @Override
         public boolean hasNext(AnalysisContext context) {
-            return !(truncated && rows.size() > MAX_DATA_ROWS);
+            return !full;
         }
 
         @Override
