@@ -5,10 +5,8 @@ import com.zachary.BI.BiMq.BiMqConstant;
 import com.zachary.BI.BiMq.RetryDelayPolicy;
 import com.zachary.BI.config.AnalysisRecoveryProperties;
 import com.zachary.BI.model.entity.AnalysisJob;
-import com.zachary.BI.model.entity.Chart;
 import com.zachary.BI.model.enums.AnalysisJobStatusEnum;
 import com.zachary.BI.service.AnalysisJobService;
-import com.zachary.BI.service.ChartService;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -37,8 +35,6 @@ public class AnalysisJobRecoveryTask {
 
     @Resource
     private AnalysisJobService analysisJobService;
-    @Resource
-    private ChartService chartService;
     @Resource
     private BiMessageProducer biMessageProducer;
     @Resource
@@ -83,11 +79,9 @@ public class AnalysisJobRecoveryTask {
             try {
                 AnalysisJobStatusEnum outcome = analysisJobService.recoverStaleRunning(job.getId(), startedBefore);
                 if (outcome == AnalysisJobStatusEnum.RETRYING) {
-                    updateChartStatus(job.getChartId(), outcome, "The worker stopped responding; retrying.");
                     // If this publish fails, the job is now retrying and the pending check below picks it up later.
                     biMessageProducer.sendMessage(job.getId());
                 } else if (outcome == AnalysisJobStatusEnum.FAILED) {
-                    updateChartStatus(job.getChartId(), outcome, "The worker stopped responding and no retries remain.");
                     biMessageProducer.sendToDeadLetterQueue(job.getId());
                 }
                 if (outcome != null) {
@@ -138,11 +132,4 @@ public class AnalysisJobRecoveryTask {
         }
     }
 
-    private void updateChartStatus(long chartId, AnalysisJobStatusEnum status, String message) {
-        Chart update = new Chart();
-        update.setId(chartId);
-        update.setStatus(status.getValue());
-        update.setExecMessage(message);
-        chartService.updateById(update);
-    }
 }
